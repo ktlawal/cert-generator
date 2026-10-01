@@ -1,0 +1,16 @@
+{
+  "WipeMethod": {
+    "Default": "Erase All Content and Settings",
+    "Options": [
+      "Erase All Content and Settings",
+      "MDM Remote Wipe",
+      "Restore via Finder/iTunes"
+    ]
+  },
+  "ComplianceStandard": {
+    "Default": "Built-in Erase (Factory Reset)",
+    "Options": [
+      "Built-in Erase (Factory Reset)"
+    ]
+  }
+}

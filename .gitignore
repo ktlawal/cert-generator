@@ -1,0 +1,9 @@
+# Real configuration and keys live in C:\ProgramData\AppleCert, never here.
+config.json
+*.pem
+*.p8
+*.key
+# Issued certificates, the register and logs are data, not source.
+Certificates/
+register.csv
+*.log

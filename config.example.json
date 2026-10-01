@@ -1,0 +1,8 @@
+{
+  "ClientId":       "BUSINESSAPI.00000000-0000-0000-0000-000000000000",
+  "KeyId":          "00000000-0000-0000-0000-000000000000",
+  "PrivateKeyPath": "C:\\ProgramData\\AppleCert\\apple-business-key.pem",
+  "PublicOrigin":   "https://<lab-machine>.<domain>:5000",
+  "AllowedGroup":   "DOMAIN\\AppleCert-Users",
+  "DataPath":       "C:\\ProgramData\\AppleCert"
+}
