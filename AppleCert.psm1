@@ -567,7 +567,10 @@ function Test-CertificateInput {
     if ($null -ne $AssetTag -and $AssetTag -cnotmatch $script:AssetTagPattern) {
         $errors += 'Asset tag can be up to 32 letters, digits, hyphens, underscores and slashes.'
     }
-    ,$errors
+    # One problem per output item, nothing when there are none. Callers wrap
+    # the call in @(). (Returning ,$errors nested the list one level deep, so
+    # @(Test-CertificateInput ...) counted one "problem" for a valid form.)
+    $errors
 }
 
 function ConvertTo-CleanNotes {
@@ -884,6 +887,214 @@ function Get-TechnicianIdentity {
 }
 
 
+# ------------------------------------------------------------------
+#  The register: issued certificates, kept as issued
+# ------------------------------------------------------------------
+#
+#   <DataPath>\Certificates\AC-2026-000042.html   the page exactly as issued
+#   <DataPath>\register.csv                       one row per certificate
+#
+# The stored page is served back byte for byte, so the SHA-256 in the
+# register can be checked against it at any time. Nothing here deletes.
+
+$script:RegisterColumns = @(
+    'CertificateID', 'IssuedAt', 'SerialNumber', 'DeviceType', 'Model', 'AssetTag',
+    'DeviceCapacity', 'PartNumber', 'WipeMethod', 'WipeDate', 'ComplianceStandard',
+    'TechnicianName', 'TechnicianEmail', 'TechnicianAccount', 'TechnicianSid',
+    'Notes', 'Sha256'
+)
+
+function ConvertTo-CsvSafeText {
+    <#
+        A register opened in Excel must not run formulas. A value starting
+        with = + - @ (or a tab or carriage return) gets a leading apostrophe;
+        ConvertFrom-CsvSafeText takes it off again. The two are a pair.
+    #>
+    param([string]$Text)
+    if ($null -eq $Text) { return '' }
+    if ($Text -match '^[=+\-@\t\r]') { return "'" + $Text }
+    $Text
+}
+
+function ConvertFrom-CsvSafeText {
+    param([string]$Text)
+    if ($null -eq $Text) { return '' }
+    if ($Text -match "^'[=+\-@\t\r]") { return $Text.Substring(1) }
+    $Text
+}
+
+function Get-CertificateFolder {
+    param([Parameter(Mandatory)][string]$DataPath)
+    Join-Path $DataPath 'Certificates'
+}
+
+function Get-RegisterPath {
+    param([Parameter(Mandatory)][string]$DataPath)
+    Join-Path $DataPath 'register.csv'
+}
+
+function Get-CertificateRegister {
+    <#
+        Every register row, values un-escaped. An absent register is an empty
+        one: nothing has been issued yet.
+    #>
+    param([Parameter(Mandatory)][string]$DataPath)
+    $path = Get-RegisterPath -DataPath $DataPath
+    if (-not (Test-Path -LiteralPath $path)) { return @() }
+    $rows = @(Import-Csv -LiteralPath $path -Encoding UTF8)
+    foreach ($r in $rows) {
+        $clean = [ordered]@{}
+        foreach ($c in $script:RegisterColumns) { $clean[$c] = ConvertFrom-CsvSafeText ([string](Get-DataProperty $r $c)) }
+        [pscustomobject]$clean
+    }
+}
+
+function Get-CertificateHistory {
+    <#
+        Certificates already issued for one serial, newest first - for the
+        device page, so a technician sees a device was certified before.
+    #>
+    param([Parameter(Mandatory)][string]$DataPath, [Parameter(Mandatory)][string]$Serial)
+    $want = $Serial.Trim().ToUpperInvariant()
+    $rows = @(Get-CertificateRegister -DataPath $DataPath | Where-Object { $_.SerialNumber -ceq $want })
+    @($rows | Sort-Object -Property @{ Expression = {
+        $t = [DateTimeOffset]::MinValue
+        [void][DateTimeOffset]::TryParse($_.IssuedAt, [Globalization.CultureInfo]::InvariantCulture,
+                                         [Globalization.DateTimeStyles]::None, [ref]$t)
+        $t } } -Descending)
+}
+
+function New-CertificateId {
+    <#
+        The next AC-YYYY-NNNNNN for the year: one more than the highest number
+        already used, looking at both the stored pages and the register, so a
+        missing file or a hand-edited register cannot hand out a number twice.
+        The numbers restart each year.
+    #>
+    param([Parameter(Mandatory)][string]$DataPath, [Parameter(Mandatory)][int]$Year)
+
+    $max = 0
+    $pattern = '^AC-{0}-(\d{{6}})' -f $Year
+    $folder = Get-CertificateFolder -DataPath $DataPath
+    if (Test-Path -LiteralPath $folder) {
+        foreach ($f in @(Get-ChildItem -LiteralPath $folder -Filter "AC-$Year-*.html" -File)) {
+            if ($f.BaseName -match "$pattern\z") { $max = [Math]::Max($max, [int]$Matches[1]) }
+        }
+    }
+    foreach ($r in @(Get-CertificateRegister -DataPath $DataPath)) {
+        if ($r.CertificateID -match "$pattern\z") { $max = [Math]::Max($max, [int]$Matches[1]) }
+    }
+    if ($max -ge 999999) { throw "Certificate numbers for $Year are used up." }
+    'AC-{0}-{1:D6}' -f $Year, ($max + 1)
+}
+
+function New-IssuedCertificate {
+    <#
+        Issues one certificate: takes the next number, builds the data and the
+        page, stores the page (never overwriting one), then appends the
+        register row with the page's SHA-256. If the register cannot be
+        written, the stored page is removed again so the two never disagree.
+
+        Returns the certificate data plus Sha256 and Path.
+    #>
+    param(
+        [Parameter(Mandatory)][string]$DataPath,
+        [Parameter(Mandatory)]$Device,
+        [Parameter(Mandatory)]$Options,
+        [Parameter(Mandatory)]$Technician,
+        [string]$WipeMethod,
+        [string]$ComplianceStandard,
+        [string]$WipeDate,
+        [string]$Notes,
+        [string]$AssetTag,
+        [string]$HomeLink,
+        [DateTimeOffset]$IssuedAt = [DateTimeOffset]::Now
+    )
+
+    $folder = Get-CertificateFolder -DataPath $DataPath
+    if (-not (Test-Path -LiteralPath $folder)) { New-Item -ItemType Directory -Path $folder -Force | Out-Null }
+    $utf8 = New-Object Text.UTF8Encoding($false)
+
+    $attempt = 0
+    while ($true) {
+        $attempt++
+        $id   = New-CertificateId -DataPath $DataPath -Year $IssuedAt.Year
+        $data = New-CertificateData -Device $Device -Options $Options -CertificateId $id `
+                    -TechnicianName $Technician.DisplayName -TechnicianEmail $Technician.Email `
+                    -TechnicianAccount $Technician.Account -WipeMethod $WipeMethod `
+                    -ComplianceStandard $ComplianceStandard -WipeDate $WipeDate -Notes $Notes `
+                    -AssetTag $AssetTag -IssuedAt $IssuedAt
+        $bytes = $utf8.GetBytes((New-CertificateHtml -Data $data -HomeLink $HomeLink))
+        $path  = Join-Path $folder "$id.html"
+        try {
+            # CreateNew: an issued certificate is never overwritten.
+            $fs = New-Object IO.FileStream($path, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
+            try { $fs.Write($bytes, 0, $bytes.Length) } finally { $fs.Dispose() }
+            break
+        }
+        catch {
+            # Not a typed catch: under 5.1 a failing constructor reaches here
+            # wrapped in MethodInvocationException, not as the IOException.
+            # The file being there is what matters: the number was taken.
+            if ((Test-Path -LiteralPath $path) -and $attempt -lt 5) { continue }
+            throw
+        }
+    }
+
+    $sha = [System.Security.Cryptography.SHA256]::Create()
+    try { $hash = ([BitConverter]::ToString($sha.ComputeHash($bytes))).Replace('-', '').ToLowerInvariant() }
+    finally { $sha.Dispose() }
+
+    $row = [ordered]@{
+        CertificateID      = $data.CertificateID
+        IssuedAt           = $data.IssuedAtIso
+        SerialNumber       = $data.SerialNumber
+        DeviceType         = $data.DeviceType
+        Model              = $data.Model
+        AssetTag           = $data.AssetTag
+        DeviceCapacity     = $data.DeviceCapacity
+        PartNumber         = $data.PartNumber
+        WipeMethod         = $data.WipeMethod
+        WipeDate           = $data.WipeDateIso
+        ComplianceStandard = $data.ComplianceStandard
+        TechnicianName     = $data.Technician
+        TechnicianEmail    = $data.TechnicianEmail
+        TechnicianAccount  = $data.TechnicianAccount
+        TechnicianSid      = [string]$Technician.Sid
+        Notes              = $data.Notes
+        Sha256             = $hash
+    }
+    $safe = [ordered]@{}
+    foreach ($k in $row.Keys) { $safe[$k] = ConvertTo-CsvSafeText ([string]$row[$k]) }
+
+    try {
+        [pscustomobject]$safe | Export-Csv -LiteralPath (Get-RegisterPath -DataPath $DataPath) `
+            -Append -NoTypeInformation -Encoding UTF8 -ErrorAction Stop
+    }
+    catch {
+        Remove-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue
+        throw "Certificate $id was not issued: the register could not be written ($($_.Exception.Message))."
+    }
+
+    $data | Add-Member -NotePropertyName Sha256 -NotePropertyValue $hash -PassThru |
+            Add-Member -NotePropertyName Path -NotePropertyValue $path -PassThru
+}
+
+function Get-IssuedCertificate {
+    <#
+        The stored page for one certificate, as bytes, exactly as issued - or
+        $null if there is none. The ID is checked against its exact shape
+        before it is used in a path, so it can never reach outside the
+        certificate folder.
+    #>
+    param([Parameter(Mandatory)][string]$DataPath, [string]$Id)
+    if (-not (Test-CertificateId $Id)) { return $null }
+    $path = Join-Path (Get-CertificateFolder -DataPath $DataPath) "$Id.html"
+    if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { return $null }
+    ,[IO.File]::ReadAllBytes($path)
+}
+
+
 Export-ModuleMember -Function @(
     'ConvertTo-HtmlText', 'Get-DataProperty', 'Test-SerialNumber', 'Test-CertificateId',
     'Get-AppleCertSecurityHeader', 'Test-RequestOrigin',
@@ -892,5 +1103,8 @@ Export-ModuleMember -Function @(
     'Get-AppleAccessToken', 'Clear-AppleAccessToken', 'Get-AppleTokenState',
     'Get-AppleBusinessDevice',
     'Test-CertificateInput', 'New-CertificateData', 'New-CertificateHtml',
-    'Resolve-AllowedGroupSid', 'Test-AllowedUser', 'Get-TechnicianIdentity'
+    'Resolve-AllowedGroupSid', 'Test-AllowedUser', 'Get-TechnicianIdentity',
+    'ConvertTo-CsvSafeText', 'ConvertFrom-CsvSafeText',
+    'Get-CertificateRegister', 'Get-CertificateHistory', 'New-CertificateId',
+    'New-IssuedCertificate', 'Get-IssuedCertificate'
 )

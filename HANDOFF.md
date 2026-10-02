@@ -15,10 +15,10 @@ Apple Business lookup -> certificate data (Apple + technician) -> certificate HT
 |---|---|
 | 1. Decisions | **Agreed**, below |
 | 2. Prove the runtime on the lab machine | **Mostly done (2 Oct 2026)**: tests pass under 5.1; listener, silent sign-in and the Origin check proven as SYSTEM. Still to run: 2c (Apple lookup, released device) |
-| 3. Certificate HTML matching the Word template | **Built, awaiting approval** after a Print → Save as PDF in Edge |
-| 4. Pages (serial form, device page, certificate routes) | Not started (waits on 2 and 3) |
-| 5. Register and the rest of the tests | Not started |
-| 6. Deploy (URL reservation, scheduled task) | Not started |
+| 3. Certificate HTML matching the Word template | **Approved (2 Oct 2026)**: one Letter page each, no browser header or footer with the box ticked, colours kept, file name from the title — checked in Edge |
+| 4. Pages (serial form, device page, certificate routes) | **Built**: `Start-AppleCertServer.ps1`. Tested end to end in a browser here with stand-ins for Apple, AD and the group; **not yet run on the lab machine** |
+| 5. Register and the rest of the tests | **Built**: register in the module, 149 offline checks |
+| 6. Deploy (URL reservation, scheduled task) | URL reserved during step 2. Startup task: commands below, **not yet run** |
 
 ## Decisions
 
@@ -44,7 +44,8 @@ Apple Business lookup -> certificate data (Apple + technician) -> certificate HT
 | `AppleCert.psm1` | The module. No credentials. Apple sign-in and the one lookup, input checks, the certificate page, the Origin and group checks, the AD lookup, the security headers. |
 | `CertificateOptions.json` | The dropdown choices and their defaults. A new wipe method is an edit here. |
 | `config.example.json` | The shape of the real config, which lives at `C:\ProgramData\AppleCert\config.json` and never in the repo. |
-| `Test-AppleCert.ps1` | Offline tests (117 checks). Runs under 5.1 and 7. |
+| `Start-AppleCertServer.ps1` | The server: listener, routes, sign-in, group check, Origin check, logging. Reads the config at startup. |
+| `Test-AppleCert.ps1` | Offline tests (149 checks), register included. Runs under 5.1 and 7. |
 | `Test-RuntimeProbe.ps1` | Step 2: listener + Windows sign-in + group + AD + Origin check, on the lab machine. |
 | `Test-AppleLookup.ps1` | Step 2: the Apple lookup through the module, with the real config and key. Also the released-device test. |
 | `New-SampleCertificate.ps1` | Step 3: writes two sample certificates (typical, and worst case) with invented data. |
@@ -213,6 +214,83 @@ Open each file in **Edge**, press **Print**, choose **Save as PDF**, and check:
   on by the page)
 - the PDF's suggested file name is `AC-…-000042 Certificate of Data Erasure C02TEST0SN01`
 
+## The app — routes, pages and register
+
+| Route | What it does |
+|---|---|
+| `GET /applecert/` | Serial form, AppFilter's split page. Shows who you are signed in as. |
+| `GET /applecert/device?serial=X` | Apple's record, read-only. **Any certificates already issued for the serial, newest first, linked** — a warning, not a block. The form: wipe method, compliance standard (from `CertificateOptions.json`), wipe date (today, no future dates), asset tag, notes (500 max). |
+| `POST /applecert/certificate` | Origin must match `PublicOrigin` exactly (403 otherwise). Body over 16 KB refused (413). **Device fetched from Apple again**; nothing about the device is taken from the form. Every choice checked against the options file; a refusal shows the device page again with the problems listed and the entries kept. Then: next number, page stored, register row, **303** to the GET below — so a refresh or Back never issues a second certificate. |
+| `GET /applecert/certificate?id=X` | The stored page, byte for byte. The ID is checked against `^AC-\d{4}-\d{6}\z` before any path is built. |
+| `GET /applecert/health` | `OK`. The only route without the group check. |
+
+Every other route, **viewing stored certificates included**, needs `AllowedGroup`;
+refusals are logged. Errors show a generic page; the detail goes to the log.
+
+**Register**, in `C:\ProgramData\AppleCert`:
+
+- `Certificates\AC-2026-000042.html` — each page as issued. Never overwritten:
+  a file already at the next number is skipped.
+- `register.csv` — one row per certificate: ID, time issued (ISO, with offset),
+  serial, device type, model, asset tag, capacity, part number, wipe method,
+  wipe date, standard, technician name, email, `DOMAIN\user`, SID, notes, and
+  the **SHA-256 of the stored page**. Values starting `= + - @` get a leading
+  apostrophe so Excel does not run them; the app strips it on reading.
+- `AppleCertServer.log` — every request and refusal, and `ISSUED` lines with
+  the ID, choices and hash. Rotates at 5 MB.
+
+Numbers come from the highest already used that year, in the files or the
+register, plus one; they restart each January.
+
+**Testing before go-live:** test certificates are real register entries. Before
+real use, stop the task and delete `register.csv` and the `Certificates` folder
+so numbering starts again at `000001` — or ask for a "TEST" mode instead.
+
+## Step 4 — run the app on the lab machine
+
+Needs 2c done first: the real `ClientId`, `KeyId` and key in
+`C:\ProgramData\AppleCert`. The server checks the config, the group and the key
+before it opens the port, and refuses to start if any is wrong.
+
+```powershell
+# 1. The probe and the app share the URL: remove the probe task.
+Unregister-ScheduledTask -TaskName 'AppleCert runtime probe' -Confirm:$false
+
+# 2. The startup task: at boot, as SYSTEM, no time limit, restarts on failure,
+#    output captured from the first run.
+$script = 'C:\Solutions\AppleCertGenerator\Start-AppleCertServer.ps1'
+$out    = 'C:\Solutions\AppleCertGenerator\task-output.log'
+$action = New-ScheduledTaskAction -Execute 'powershell.exe' `
+    -Argument "-NoProfile -ExecutionPolicy Bypass -Command `"& '$script' *> '$out'; exit `$LASTEXITCODE`""
+$settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero) `
+    -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1) -StartWhenAvailable
+Register-ScheduledTask -TaskName 'AppleCert server' -Action $action -Settings $settings `
+    -Trigger (New-ScheduledTaskTrigger -AtStartup) -User 'NT AUTHORITY\SYSTEM' -RunLevel Highest -Force
+Start-ScheduledTask -TaskName 'AppleCert server'
+
+# 3. Check it started.
+Start-Sleep -Seconds 5
+(Get-ScheduledTask -TaskName 'AppleCert server').State          # Running
+Get-Content C:\ProgramData\AppleCert\AppleCertServer.log -Tail 3  # STARTED ...
+```
+
+If it is not running, `task-output.log` and the last lines of
+`AppleCertServer.log` say why (`FAILED TO START` with the reason).
+
+Then, from a technician PC, at `https://<lab-machine>.<domain>:5000/applecert/`:
+
+1. Look up a real serial. The device page shows Apple's details and "No
+   certificates have been issued for this device yet."
+2. Generate a certificate. The address changes to `…/certificate?id=AC-2026-000001`.
+   Press F5: the same certificate, not a new number.
+3. Print → Save as PDF, as in step 3.
+4. Go back to the device page: it now warns about `AC-2026-000001` and links to it.
+5. On the lab machine: the file in `Certificates`, the row in `register.csv`,
+   and the `ISSUED` line in the log.
+
+**After changing the config or the code:** `Stop-ScheduledTask` then
+`Start-ScheduledTask` — the server reads both only at startup.
+
 ## Verified so far, and how
 
 | Claim | How |
@@ -226,6 +304,12 @@ Open each file in **Edge**, press **Print**, choose **Save as PDF**, and check:
 | Silent Windows sign-in | Edge on a technician PC loaded the probe page with no prompt. `-Check` from PowerShell 7.6 with default credentials got 200. |
 | Strict Origin check, live | Edge's real form POST: ACCEPTED. `-Check`: correct Origin 200; `null`, missing, foreign and same-host-over-http all 403. |
 | `Domain Users` resolves as `AllowedGroup` | Probe resolved it to the domain SID ending `-513`. |
+| AD display name and mail | Probe page on the lab machine: "AD lookup: Active Directory" for a technician account. |
+| Certificate in Edge | Step 3: both samples one Letter page, no browser header or footer with the box ticked, colours kept, file name right. Approved 2 Oct 2026. |
+| The pages, end to end | Here, in Chromium, against a copy of the server with stand-ins for Apple, AD and the group (plain HTTP, anonymous): issue redirects to the ID; refresh issues nothing; the device page then lists and links the certificate; the second gets the next number; not found, bad serial and released device shown right; an Apple error shows a generic page with no detail. |
+| The POST refuses what it should | `Origin: null`, no Origin, a foreign Origin (403); future date, an option not in the file, a bad serial (400); 20 KB body (413). None issued anything. Device fields added to the form were ignored and Apple was asked again. |
+| Group check covers everything | With the user outside the group: form, device page, stored certificate and POST all 403; `/health` 200. |
+| Register | Stored page served byte for byte; register hash = SHA-256 of the file; a formula in the notes is stored escaped and read back intact; history newest first; a file already at the next number is skipped, never overwritten; numbers restart each year. |
 
-**Not verified yet:** the AD display name and mail lookup, the Apple API itself
-(2c), whether released devices are returned, and Edge's print dialog (step 3).
+**Not verified yet:** the Apple API itself (2c), whether released devices are
+returned, and the app itself on the lab machine (step 4).

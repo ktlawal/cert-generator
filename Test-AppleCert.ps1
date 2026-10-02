@@ -170,6 +170,14 @@ Assert-That '501-char notes'         (Get-Problem @{ Notes = ('x' * 501) }).Coun
 Assert-That 'asset tag'              (Get-Problem @{ AssetTag = 'IT-004521' }).Count 0
 Assert-That 'asset tag with markup'  (Get-Problem @{ AssetTag = '<b>' }).Count 1
 Assert-That 'asset tag too long'     (Get-Problem @{ AssetTag = ('A' * 33) }).Count 1
+# Called exactly as the server calls it: no helper in between to unwrap it.
+$direct = @(Test-CertificateInput -Options $options -WipeMethod 'MDM Remote Wipe' `
+              -ComplianceStandard 'Built-in Erase (Factory Reset)' -WipeDate '2026-10-01' -Today $today)
+Assert-That 'valid input, called directly' $direct.Count 0
+$direct = @(Test-CertificateInput -Options $options -WipeMethod 'Hammer' `
+              -ComplianceStandard 'Nope' -WipeDate '2026-10-02' -Today $today)
+Assert-That 'three problems, called directly' $direct.Count 3
+Assert-That 'problems are strings'   ($direct[0] -is [string]) 'True'
 
 
 Write-Host "`nCertificate data" -ForegroundColor Cyan
@@ -235,6 +243,75 @@ Assert-That 'CSP hash matches the handler'   ($headers['Content-Security-Policy'
 Assert-That 'no script elements'             ($html -match '<script')                     'False'
 Assert-That 'back link'                      ($html -match 'href="/applecert/"')          'True'
 Assert-That 'no back link when not asked'    ($blankHtml -match 'look up another device') 'False'
+
+
+Write-Host "`nRegister" -ForegroundColor Cyan
+Assert-That 'CSV-safe: formula escaped'   (ConvertTo-CsvSafeText '=SUM(A1)')   "'=SUM(A1)"
+Assert-That 'CSV-safe: plain left alone'  (ConvertTo-CsvSafeText 'IT-1')       'IT-1'
+Assert-That 'CSV-safe: round trip'        (ConvertFrom-CsvSafeText (ConvertTo-CsvSafeText '-1+2')) '-1+2'
+Assert-That 'CSV-safe: real apostrophe kept' (ConvertFrom-CsvSafeText "'quoted'") "'quoted'"
+
+$reg = Join-Path ([IO.Path]::GetTempPath()) ("applecert-reg-" + [Guid]::NewGuid().ToString('n'))
+New-Item -ItemType Directory -Path $reg | Out-Null
+try {
+    $tech = [pscustomobject]@{ DisplayName = "Alex O'Example"; Email = 'alex@example.org'
+                               Account = 'DOMAIN\aexample'; Sid = 'S-1-5-21-1-2-3-1001' }
+    $issue = @{
+        DataPath = $reg; Device = $device; Options = $options; Technician = $tech
+        WipeMethod = 'MDM Remote Wipe'; ComplianceStandard = 'Built-in Erase (Factory Reset)'
+        WipeDate = '2026-10-01'; Notes = "=HYPERLINK(""x"")`nline two"; AssetTag = 'IT-1'; HomeLink = '/applecert/'
+    }
+
+    Assert-That 'first ID of the year'        (New-CertificateId -DataPath $reg -Year 2026) 'AC-2026-000001'
+    $c1 = New-IssuedCertificate @issue -IssuedAt $issued
+    $c2 = New-IssuedCertificate @issue -IssuedAt $issued.AddMinutes(5)
+    Assert-That 'first certificate'           $c1.CertificateID 'AC-2026-000001'
+    Assert-That 'second certificate'          $c2.CertificateID 'AC-2026-000002'
+
+    $file = [IO.File]::ReadAllBytes($c1.Path)
+    $sha = [System.Security.Cryptography.SHA256]::Create()
+    $fileHash = ([BitConverter]::ToString($sha.ComputeHash($file))).Replace('-', '').ToLowerInvariant()
+    $sha.Dispose()
+    Assert-That 'hash is of the stored file'  $c1.Sha256 $fileHash
+    Assert-That 'stored file has no BOM'      ($file[0] -eq 0x3C) 'True'
+
+    $served = Get-IssuedCertificate -DataPath $reg -Id 'AC-2026-000001'
+    Assert-That 'served back byte for byte'   ([Convert]::ToBase64String($served)) ([Convert]::ToBase64String($file))
+    Assert-That 'unknown ID gives nothing'    ($null -eq (Get-IssuedCertificate -DataPath $reg -Id 'AC-2026-000099')) 'True'
+    Assert-That 'traversal ID gives nothing'  ($null -eq (Get-IssuedCertificate -DataPath $reg -Id '..\register.csv')) 'True'
+    Assert-That 'empty ID gives nothing'      ($null -eq (Get-IssuedCertificate -DataPath $reg -Id '')) 'True'
+
+    $rows = @(Get-CertificateRegister -DataPath $reg)
+    Assert-That 'two register rows'           $rows.Count 2
+    Assert-That 'row hash matches'            $rows[0].Sha256 $c1.Sha256
+    Assert-That 'technician account kept'     $rows[0].TechnicianAccount 'DOMAIN\aexample'
+    Assert-That 'technician SID kept'         $rows[0].TechnicianSid 'S-1-5-21-1-2-3-1001'
+    Assert-That 'wipe date stored as ISO'     $rows[0].WipeDate '2026-10-01'
+    Assert-That 'notes round trip (formula, newline)' $rows[0].Notes "=HYPERLINK(""x"")`nline two"
+    $raw = Get-Content -LiteralPath (Join-Path $reg 'register.csv') -Raw
+    Assert-That 'formula escaped in the file' ($raw.Contains('"''=HYPERLINK(')) 'True'
+
+    $hist = @(Get-CertificateHistory -DataPath $reg -Serial 'c02test0sn01')
+    Assert-That 'history for the serial'      $hist.Count 2
+    Assert-That 'history newest first'        (($hist | ForEach-Object CertificateID) -join ',') 'AC-2026-000002,AC-2026-000001'
+    Assert-That 'no history for another serial' @(Get-CertificateHistory -DataPath $reg -Serial 'OTHER1').Count 0
+
+    # Never overwrite: a page already sitting at the next number is skipped.
+    Set-Content -LiteralPath (Join-Path $reg 'Certificates\AC-2026-000003.html') -Value 'someone else' -Encoding ASCII
+    $c4 = New-IssuedCertificate @issue -IssuedAt $issued
+    Assert-That 'existing page not overwritten' (Get-Content -LiteralPath (Join-Path $reg 'Certificates\AC-2026-000003.html') -Raw).Trim() 'someone else'
+    Assert-That 'numbering skips past it'     $c4.CertificateID 'AC-2026-000004'
+
+    # A new year starts again at 000001.
+    $c5 = New-IssuedCertificate @issue -IssuedAt ([DateTimeOffset]::new(2027, 1, 2, 9, 0, 0, [TimeSpan]::Zero)) -WipeDate '2027-01-02'
+    Assert-That 'numbers restart each year'   $c5.CertificateID 'AC-2027-000001'
+
+    # Bad input issues nothing and leaves no file behind.
+    $before = @(Get-ChildItem -LiteralPath (Join-Path $reg 'Certificates')).Count
+    Assert-Throws 'bad input refused'         { New-IssuedCertificate @issue -IssuedAt $issued -WipeMethod 'Hammer' } '*wipe method*'
+    Assert-That 'nothing stored on refusal'   @(Get-ChildItem -LiteralPath (Join-Path $reg 'Certificates')).Count $before
+}
+finally { Remove-Item -LiteralPath $reg -Recurse -Force -ErrorAction SilentlyContinue }
 
 
 Write-Host "`nPrivate key and ES256 signing" -ForegroundColor Cyan
