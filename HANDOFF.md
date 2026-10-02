@@ -74,24 +74,63 @@ here ends in `\z`. The tests cover it.
 
 ## Step 2 — prove the runtime on the lab machine
 
-Copy the repo to `<install-path>` on the lab machine.
+**Install path: `C:\Solutions\AppleCertGenerator`** — its own folder, beside
+AppFilter's `C:\Solutions\ApplicationList`, not inside it. The key, config and
+(later) issued certificates live in `C:\ProgramData\AppleCert`, so copying in
+new code never touches them.
 
-### 2a. Key and config
+The code folder keeps its inherited permissions: only administrators can sign
+in to the lab machine, and they could change any permission anyway (the same
+reasoning as AppFilter's H-2). Revisit that if anyone else is ever allowed to
+sign in.
+
+### Before you start
+
+You need these to hand. None of them is created by the scripts.
+
+- **PowerShell 7** on the lab machine, if you want to run under it: check with
+  `Get-Command pwsh`. If it is not there, the 5.1 runs below still work.
+- **The AD group** that will be allowed to use the app, e.g.
+  `DOMAIN\AppleCert-Users`, with you in it. Group membership is read from your
+  Windows sign-in, so if you were just added, sign out and back in to your PC
+  first.
+- **The Apple Business API account**: client ID, key ID and the private key
+  `.pem`, ideally on a custom role that can only view devices.
+- **The lab machine's full name**, `<lab-machine>.<domain>`: the one in
+  AppFilter's URL.
+
+### 2a. Copy the files, key and config (on the lab machine, elevated)
 
 ```powershell
-# Folder only SYSTEM and Administrators can read (SIDs, so it works in any language)
+# 1. The code: copy the repo's files into the folder, then unblock them.
+#    Files from GitHub or a zip are marked as downloaded, and Windows refuses
+#    to run them by hand until they are unblocked.
+Get-ChildItem C:\Solutions\AppleCertGenerator -Recurse | Unblock-File
+
+# 2. The data folder: only SYSTEM and Administrators can read it
+#    (SIDs, so it works in any Windows language).
 New-Item -ItemType Directory -Path C:\ProgramData\AppleCert -Force
 icacls C:\ProgramData\AppleCert /inheritance:r /grant:r "*S-1-5-18:(OI)(CI)F" "*S-1-5-32-544:(OI)(CI)F"
 
-# Then put the Apple key in it as apple-business-key.pem, and copy
-# config.example.json to C:\ProgramData\AppleCert\config.json and fill it in.
+# 3. The key: copy the Apple .pem in as
+#    C:\ProgramData\AppleCert\apple-business-key.pem
+#    and delete any other copy you made on the way (Downloads, desktop, USB).
+
+# 4. The config: start from the example and fill in the real values.
+Copy-Item C:\Solutions\AppleCertGenerator\config.example.json C:\ProgramData\AppleCert\config.json
+notepad C:\ProgramData\AppleCert\config.json
 ```
+
+In `config.json`: `ClientId`, `KeyId`, `PublicOrigin` as
+`https://<lab-machine>.<domain>:5000` (the full name, no trailing slash),
+`AllowedGroup` as `DOMAIN\GroupName`. Leave `PrivateKeyPath` and `DataPath` as
+they are. Backslashes in JSON are doubled: `"DOMAIN\\AppleCert-Users"`.
 
 ### 2b. Offline tests, under both runtimes
 
 ```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File <install-path>\Test-AppleCert.ps1
-pwsh.exe       -NoProfile -ExecutionPolicy Bypass -File <install-path>\Test-AppleCert.ps1
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\Solutions\AppleCertGenerator\Test-AppleCert.ps1
+pwsh.exe       -NoProfile -ExecutionPolicy Bypass -File C:\Solutions\AppleCertGenerator\Test-AppleCert.ps1
 ```
 
 Both should end `All cases passed.` The key-loading checks are the ones that
@@ -100,8 +139,8 @@ matter most under 5.1.
 ### 2c. Apple lookup through the module (elevated)
 
 ```powershell
-pwsh.exe       -NoProfile -File <install-path>\Test-AppleLookup.ps1 -Serial <serial>
-powershell.exe -NoProfile -File <install-path>\Test-AppleLookup.ps1 -Serial <serial>
+pwsh.exe       -NoProfile -ExecutionPolicy Bypass -File C:\Solutions\AppleCertGenerator\Test-AppleLookup.ps1 -Serial <serial>
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\Solutions\AppleCertGenerator\Test-AppleLookup.ps1 -Serial <serial>
 ```
 
 Then once with the serial of a device **already released** from Apple
@@ -111,18 +150,20 @@ the certificate must be issued **before** a device is released; a record with
 
 ### 2d. Listener, Windows sign-in, group, AD, Origin — as SYSTEM
 
-Reserve the app's URL for SYSTEM (this is the real reservation; it stays):
+Reserve the app's URL for SYSTEM (this is the real reservation; it stays). The
+TLS certificate on port 5000 is AppFilter's and is shared automatically:
 
 ```
 netsh http add urlacl url=https://+:5000/applecert/ user="NT AUTHORITY\SYSTEM"
 ```
 
 Run the probe as a **one-off** scheduled task as SYSTEM, capturing its output
-from the first run. `*>` only works inside `-Command`, not after `-File`:
+from the first run. `*>` only works inside `-Command`, not after `-File`.
+Replace the origin and group with your own:
 
 ```powershell
-$probe = '<install-path>\Test-RuntimeProbe.ps1'
-$out   = '<install-path>\probe-task-output.log'
+$probe = 'C:\Solutions\AppleCertGenerator\Test-RuntimeProbe.ps1'
+$out   = 'C:\Solutions\AppleCertGenerator\probe-task-output.log'
 $taskArgs = "-NoProfile -ExecutionPolicy Bypass -Command `"& '$probe' -Serve " +
             "-PublicOrigin 'https://<lab-machine>.<domain>:5000' -AllowedGroup 'DOMAIN\AppleCert-Users' " +
             "-Minutes 30 *> '$out'`""
@@ -131,6 +172,10 @@ Register-ScheduledTask -TaskName 'AppleCert runtime probe' -User 'NT AUTHORITY\S
 Start-ScheduledTask -TaskName 'AppleCert runtime probe'
 ```
 
+Check it started: `C:\Solutions\AppleCertGenerator\RuntimeProbe.log` should
+have a `PROBE STARTED` line naming `PowerShell 7…` and `NT AUTHORITY\SYSTEM`.
+If not, `probe-task-output.log` says why.
+
 Then, from a technician PC (not the lab machine):
 
 1. Open `https://<lab-machine>.<domain>:5000/applecert/` in **Edge**. Expect no
@@ -138,21 +183,25 @@ Then, from a technician PC (not the lab machine):
    and mail, and the runtime `PowerShell 7…`.
 2. Press **Send a form POST**. Expect **ACCEPTED**, with the Origin shown as
    `https://<lab-machine>.<domain>:5000`.
-3. In PowerShell:
+3. Copy `Test-RuntimeProbe.ps1` and `AppleCert.psm1` to a folder on that PC,
+   unblock them, and run:
    `.\Test-RuntimeProbe.ps1 -Check -Url https://<lab-machine>.<domain>:5000/applecert/`
    Expect PASS on all: the correct Origin 200; `Origin: null`, no Origin, a
    foreign Origin and the same host over http all 403.
 4. Ask someone **not** in the group to open the page: "In allowed group: NO".
 
 Repeat with `-Execute 'powershell.exe'` if pwsh fails, or to confirm the 5.1
-fallback. The probe stops itself after 30 minutes; delete the task afterwards:
+fallback (re-run the `Register-ScheduledTask` line with `-Force`). The probe
+stops itself after 30 minutes; delete the task afterwards:
 `Unregister-ScheduledTask -TaskName 'AppleCert runtime probe' -Confirm:$false`.
-The probe log is `<install-path>\RuntimeProbe.log`.
+
+**Send back:** the output of 2b and 2c (both runtimes), the released-device
+result, `RuntimeProbe.log`, and what the Edge page and `-Check` showed.
 
 ## Step 3 — approve the certificate
 
 ```powershell
-.\New-SampleCertificate.ps1 -OutputFolder $env:USERPROFILE\Desktop
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\Solutions\AppleCertGenerator\New-SampleCertificate.ps1 -OutputFolder $env:USERPROFILE\Desktop
 ```
 
 Open each file in **Edge**, press **Print**, choose **Save as PDF**, and check:
