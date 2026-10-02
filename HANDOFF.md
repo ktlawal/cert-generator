@@ -29,7 +29,7 @@ Apple Business lookup -> certificate data (Apple + technician) -> certificate HT
 | Technician | Certificate shows the AD **`displayName`**. The email is AD **`mail`**, looked up by SID through LDAP (no RSAT). If AD cannot be read, the account name is used, the email is blank ("—"), and it is logged; the certificate is still issued. The register also keeps `DOMAIN\user` and the SID. |
 | Certificate ID | **`AC-YYYY-NNNNNN`**: a sequence number that restarts each year, e.g. `AC-2026-000042`. Checked against `^AC-\d{4}-\d{6}\z` before any file name is built from it. |
 | Register | `C:\ProgramData\AppleCert\` (readable only by SYSTEM and Administrators): `register.csv` plus `Certificates\<ID>.html` as issued, served back byte for byte so the SHA-256 in the register stays checkable. Kept indefinitely; nothing deletes them. |
-| Who can use it | One AD group, set as `AllowedGroup` in the config, resolved to a SID at startup (a typo stops the server). Checked from the caller's Windows token on every route except `/health`, for viewing stored certificates as well as issuing them. Refusals are logged. |
+| Who can use it | One AD group, set as `AllowedGroup` in the config, resolved to a SID at startup (a typo stops the server). Checked from the caller's Windows token on every route except `/health`, for viewing stored certificates as well as issuing them. Refusals are logged. **For now: `DOMAIN\Domain Users`** (every domain account), by decision; narrowing it later is a config edit and a task restart. |
 | Network | Domain firewall profile only (the existing TCP 5000 rule). |
 | Referrer-Policy | **`same-origin`** for this app, not AppFilter's `no-referrer`. Under `no-referrer` a browser sends `Origin: null` on a form POST — confirmed with Chromium — which the Origin check below would refuse every time. `same-origin` still sends nothing to other sites. |
 | Origin check | On `POST /applecert/certificate`: accept **only** an exact match to `PublicOrigin` from the config. `null`, a missing Origin, `http://`, another port, the short name — all refused (403). |
@@ -184,7 +184,8 @@ Then, from a technician PC (not the lab machine):
    `.\Test-RuntimeProbe.ps1 -Check -Url https://<lab-machine>.<domain>:5000/applecert/`
    Expect PASS on all: the correct Origin 200; `Origin: null`, no Origin, a
    foreign Origin and the same host over http all 403.
-4. Ask someone **not** in the group to open the page: "In allowed group: NO".
+4. Once `AllowedGroup` is narrowed from `Domain Users`: ask someone **not** in the
+   group to open the page, and expect "In allowed group: NO".
 
 The probe
 stops itself after 30 minutes; delete the task afterwards:
