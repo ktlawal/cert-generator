@@ -24,7 +24,7 @@ Apple Business lookup -> certificate data (Apple + technician) -> certificate HT
 
 | | Decision |
 |---|---|
-| PowerShell | The module runs under **both** Windows PowerShell 5.1 and PowerShell 7: its key loader parses the PEM by hand into `ECParameters`, and needs neither `ImportFromPem` nor `DSASignatureFormat`. The runtime probe decides which one the scheduled task starts. Preferred: `pwsh.exe`, if it is installed and the probe passes under it. |
+| PowerShell | **Windows PowerShell 5.1** (`powershell.exe`), as AppFilter. PowerShell 7 is not installed on the lab machine, and the agreed rule was to use it only if it already was. The module still runs under both: its key loader parses the PEM by hand into `ECParameters` and needs neither `ImportFromPem` nor `DSASignatureFormat`, so moving to 7 later is a change to the scheduled task, not to the code. |
 | Asset tag | Typed by the technician, **optional**, `^[A-Za-z0-9\-_/]{0,32}$`. Blank prints "—". |
 | Technician | Certificate shows the AD **`displayName`**. The email is AD **`mail`**, looked up by SID through LDAP (no RSAT). If AD cannot be read, the account name is used, the email is blank ("—"), and it is logged; the certificate is still issued. The register also keeps `DOMAIN\user` and the SID. |
 | Certificate ID | **`AC-YYYY-NNNNNN`**: a sequence number that restarts each year, e.g. `AC-2026-000042`. Checked against `^AC-\d{4}-\d{6}\z` before any file name is built from it. |
@@ -44,7 +44,7 @@ Apple Business lookup -> certificate data (Apple + technician) -> certificate HT
 | `AppleCert.psm1` | The module. No credentials. Apple sign-in and the one lookup, input checks, the certificate page, the Origin and group checks, the AD lookup, the security headers. |
 | `CertificateOptions.json` | The dropdown choices and their defaults. A new wipe method is an edit here. |
 | `config.example.json` | The shape of the real config, which lives at `C:\ProgramData\AppleCert\config.json` and never in the repo. |
-| `Test-AppleCert.ps1` | Offline tests: 113 checks. Run under both runtimes. |
+| `Test-AppleCert.ps1` | Offline tests (117 checks). Runs under 5.1 and 7. |
 | `Test-RuntimeProbe.ps1` | Step 2: listener + Windows sign-in + group + AD + Origin check, on the lab machine. |
 | `Test-AppleLookup.ps1` | Step 2: the Apple lookup through the module, with the real config and key. Also the released-device test. |
 | `New-SampleCertificate.ps1` | Step 3: writes two sample certificates (typical, and worst case) with invented data. |
@@ -88,8 +88,6 @@ sign in.
 
 You need these to hand. None of them is created by the scripts.
 
-- **PowerShell 7** on the lab machine, if you want to run under it: check with
-  `Get-Command pwsh`. If it is not there, the 5.1 runs below still work.
 - **The AD group** that will be allowed to use the app, e.g.
   `DOMAIN\AppleCert-Users`, with you in it. Group membership is read from your
   Windows sign-in, so if you were just added, sign out and back in to your PC
@@ -126,20 +124,18 @@ In `config.json`: `ClientId`, `KeyId`, `PublicOrigin` as
 `AllowedGroup` as `DOMAIN\GroupName`. Leave `PrivateKeyPath` and `DataPath` as
 they are. Backslashes in JSON are doubled: `"DOMAIN\\AppleCert-Users"`.
 
-### 2b. Offline tests, under both runtimes
+### 2b. Offline tests
 
 ```powershell
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\Solutions\AppleCertGenerator\Test-AppleCert.ps1
-pwsh.exe       -NoProfile -ExecutionPolicy Bypass -File C:\Solutions\AppleCertGenerator\Test-AppleCert.ps1
 ```
 
-Both should end `All cases passed.` The key-loading checks are the ones that
-matter most under 5.1.
+It should end `All cases passed.` **Done on the lab machine: all passed under
+5.1.26100**, key loading and ES256 signing included.
 
 ### 2c. Apple lookup through the module (elevated)
 
 ```powershell
-pwsh.exe       -NoProfile -ExecutionPolicy Bypass -File C:\Solutions\AppleCertGenerator\Test-AppleLookup.ps1 -Serial <serial>
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\Solutions\AppleCertGenerator\Test-AppleLookup.ps1 -Serial <serial>
 ```
 
@@ -168,19 +164,19 @@ $taskArgs = "-NoProfile -ExecutionPolicy Bypass -Command `"& '$probe' -Serve " +
             "-PublicOrigin 'https://<lab-machine>.<domain>:5000' -AllowedGroup 'DOMAIN\AppleCert-Users' " +
             "-Minutes 30 *> '$out'`""
 Register-ScheduledTask -TaskName 'AppleCert runtime probe' -User 'NT AUTHORITY\SYSTEM' -RunLevel Highest `
-    -Action (New-ScheduledTaskAction -Execute 'pwsh.exe' -Argument $taskArgs) -Force
+    -Action (New-ScheduledTaskAction -Execute 'powershell.exe' -Argument $taskArgs) -Force
 Start-ScheduledTask -TaskName 'AppleCert runtime probe'
 ```
 
 Check it started: `C:\Solutions\AppleCertGenerator\RuntimeProbe.log` should
-have a `PROBE STARTED` line naming `PowerShell 7…` and `NT AUTHORITY\SYSTEM`.
+have a `PROBE STARTED` line naming `PowerShell 5.1…` and `NT AUTHORITY\SYSTEM`.
 If not, `probe-task-output.log` says why.
 
 Then, from a technician PC (not the lab machine):
 
 1. Open `https://<lab-machine>.<domain>:5000/applecert/` in **Edge**. Expect no
    sign-in prompt, your account, "In allowed group: yes", your AD display name
-   and mail, and the runtime `PowerShell 7…`.
+   and mail, and the runtime `PowerShell 5.1…`.
 2. Press **Send a form POST**. Expect **ACCEPTED**, with the Origin shown as
    `https://<lab-machine>.<domain>:5000`.
 3. Copy `Test-RuntimeProbe.ps1` and `AppleCert.psm1` to a folder on that PC,
@@ -190,12 +186,11 @@ Then, from a technician PC (not the lab machine):
    foreign Origin and the same host over http all 403.
 4. Ask someone **not** in the group to open the page: "In allowed group: NO".
 
-Repeat with `-Execute 'powershell.exe'` if pwsh fails, or to confirm the 5.1
-fallback (re-run the `Register-ScheduledTask` line with `-Force`). The probe
+The probe
 stops itself after 30 minutes; delete the task afterwards:
 `Unregister-ScheduledTask -TaskName 'AppleCert runtime probe' -Confirm:$false`.
 
-**Send back:** the output of 2b and 2c (both runtimes), the released-device
+**Send back:** the output of 2c, the released-device
 result, `RuntimeProbe.log`, and what the Edge page and `-Check` showed.
 
 ## Step 3 — approve the certificate
@@ -221,7 +216,7 @@ Open each file in **Edge**, press **Print**, choose **Save as PDF**, and check:
 
 | Claim | How |
 |---|---|
-| Key loader + ES256 signing produce valid assertions | Keys made by OpenSSL (PKCS#8, SEC1, PKCS#8 without the public part); every assertion verified independently with Python `cryptography`. P-384 refused. Under PowerShell 7. **5.1: run `Test-AppleCert.ps1` on Windows.** |
+| Key loader + ES256 signing produce valid assertions | Keys made by OpenSSL (PKCS#8, SEC1, PKCS#8 without the public part); every assertion verified independently with Python `cryptography`. P-384 refused. Under PowerShell 7 here, and the full test suite passed under Windows PowerShell 5.1 on the lab machine. |
 | Strict Origin check | Probe run locally over http: correct Origin 200; `null`, missing and foreign 403. A real Chromium form POST from the page is accepted. |
 | `no-referrer` would break the check | Same probe with `no-referrer`: Chromium sent `Origin: null` and was refused. |
 | Certificate fits one Letter page, worst case included | Rendered in Chromium with Carlito (metrically identical to Calibri): 1 page each. |
