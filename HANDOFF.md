@@ -14,7 +14,7 @@ Apple Business lookup -> certificate data (Apple + technician) -> certificate HT
 | Step | State |
 |---|---|
 | 1. Decisions | **Agreed**, below |
-| 2. Prove the runtime on the lab machine | **Scripts ready, not yet run there**: `Test-RuntimeProbe.ps1`, `Test-AppleLookup.ps1` |
+| 2. Prove the runtime on the lab machine | **Mostly done (2 Oct 2026)**: tests pass under 5.1; listener, silent sign-in and the Origin check proven as SYSTEM. Still to run: 2c (Apple lookup, released device) |
 | 3. Certificate HTML matching the Word template | **Built, awaiting approval** after a Print → Save as PDF in Edge |
 | 4. Pages (serial form, device page, certificate routes) | Not started (waits on 2 and 3) |
 | 5. Register and the rest of the tests | Not started |
@@ -222,6 +222,10 @@ Open each file in **Edge**, press **Print**, choose **Save as PDF**, and check:
 | `no-referrer` would break the check | Same probe with `no-referrer`: Chromium sent `Origin: null` and was refused. |
 | Certificate fits one Letter page, worst case included | Rendered in Chromium with Carlito (metrically identical to Calibri): 1 page each. |
 | Escaping | Apple data, technician name, notes, asset tag — tested with markup and quotes. |
+| Runtime: Windows PowerShell 5.1, as SYSTEM | Lab machine, 2 Oct 2026: `Test-AppleCert.ps1` all passed under 5.1.26100; the probe started under the scheduled task as `NT AUTHORITY\SYSTEM` with IntegratedWindowsAuthentication on `https://+:5000/applecert/`, beside AppFilter on the shared port and certificate. |
+| Silent Windows sign-in | Edge on a technician PC loaded the probe page with no prompt. `-Check` from PowerShell 7.6 with default credentials got 200. |
+| Strict Origin check, live | Edge's real form POST: ACCEPTED. `-Check`: correct Origin 200; `null`, missing, foreign and same-host-over-http all 403. |
+| `Domain Users` resolves as `AllowedGroup` | Probe resolved it to the domain SID ending `-513`. |
 
-**Not verified yet:** anything needing the lab machine — http.sys, Kerberos,
-the group check, AD, the Apple API itself, Edge's print dialog.
+**Not verified yet:** the AD display name and mail lookup, the Apple API itself
+(2c), whether released devices are returned, and Edge's print dialog (step 3).
