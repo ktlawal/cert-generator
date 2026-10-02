@@ -35,6 +35,7 @@ Apple Business lookup -> certificate data (Apple + technician) -> certificate HT
 | Origin check | On `POST /applecert/certificate`: accept **only** an exact match to `PublicOrigin` from the config. `null`, a missing Origin, `http://`, another port, the short name — all refused (403). |
 | Page | **US Letter**, as the Word template. Columns 2.05" / 4.95", from the template's cell widths (its grid says 50/50, but Word lays out by the cell widths). |
 | Other limits | Notes at most 500 characters (keeps the certificate on one page). Wipe date cannot be in the future. Devices are always re-fetched from Apple on the POST; nothing about the device is taken from the form. |
+| Existing certificates | The device page lists every certificate already issued for that serial, newest first: ID (linking to `GET /applecert/certificate?id=…`), date issued, wipe method, wipe date and technician, read from the register. It warns but does not block: a technician can still issue a new one, for example when a device is wiped again. The list is read on the server and every value is HTML-escaped. |
 
 ## Files
 
