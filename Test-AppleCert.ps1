@@ -17,7 +17,13 @@
 #>
 
 [CmdletBinding()]
-param([string]$OptionsPath = "$PSScriptRoot\CertificateOptions.json")
+param([string]$OptionsPath)
+
+# Windows PowerShell 5.1 leaves $PSScriptRoot empty while it binds parameter
+# defaults when a script is started with -File, so a default of
+# "$PSScriptRoot\x" becomes "\x". Defaults that need the script's folder are
+# filled in here, in the body, where $PSScriptRoot is set in every version.
+if (-not $OptionsPath) { $OptionsPath = Join-Path $PSScriptRoot 'CertificateOptions.json' }
 
 $module = Join-Path $PSScriptRoot 'AppleCert.psm1'
 if (-not (Test-Path $module)) { throw "Cannot find AppleCert.psm1 next to this test." }
@@ -303,6 +309,18 @@ Assert-That 'GET goes to $uri'               ($get -match '-Uri \$uri ') 'True'
 $src = Get-Content -LiteralPath $module -Raw
 Assert-That 'the GET URI is /v1/orgDevices/' ($src -match '\$uri = "\$\(\$script:AppleApiBase\)/v1/orgDevices/\$\(\[uri\]::EscapeDataString\(\$Serial\)\)"') 'True'
 Assert-That 'no HttpClient side door'        ($src -match 'HttpClient|WebClient|HttpWebRequest') 'False'
+
+
+Write-Host "`nScripts run under -File on 5.1" -ForegroundColor Cyan
+# Windows PowerShell 5.1 leaves $PSScriptRoot empty while binding parameter
+# defaults under -File, which once turned this test's own options path into
+# "\CertificateOptions.json". No script may use it inside its param() block.
+foreach ($script in @(Get-ChildItem -Path $PSScriptRoot -Filter '*.ps1')) {
+    $scriptAst = [System.Management.Automation.Language.Parser]::ParseFile($script.FullName, [ref]$null, [ref]$null)
+    $usesIt = $false
+    if ($scriptAst.ParamBlock) { $usesIt = $scriptAst.ParamBlock.Extent.Text -match '\$PSScriptRoot' }
+    Assert-That "$($script.Name): no `$PSScriptRoot in param()" $usesIt 'False'
+}
 
 
 Write-Host ""

@@ -48,13 +48,19 @@ param(
     [Parameter(ParameterSetName = 'Serve')]
     [ValidateSet('IntegratedWindowsAuthentication', 'Negotiate', 'Ntlm')]
     [string]$AuthScheme = 'IntegratedWindowsAuthentication',
-    [Parameter(ParameterSetName = 'Serve')][string]$LogPath = "$PSScriptRoot\RuntimeProbe.log",
+    [Parameter(ParameterSetName = 'Serve')][string]$LogPath,
 
     [Parameter(ParameterSetName = 'Check', Mandatory)][switch]$Check,
     [Parameter(ParameterSetName = 'Check', Mandatory)][string]$Url
 )
 
 Import-Module (Join-Path $PSScriptRoot 'AppleCert.psm1') -Force -ErrorAction Stop
+
+# Windows PowerShell 5.1 leaves $PSScriptRoot empty while it binds parameter
+# defaults when a script is started with -File, so a default of
+# "$PSScriptRoot\x" becomes "\x". Defaults that need the script's folder are
+# filled in here, in the body, where $PSScriptRoot is set in every version.
+if ($PSCmdlet.ParameterSetName -eq 'Serve' -and -not $LogPath) { $LogPath = Join-Path $PSScriptRoot 'RuntimeProbe.log' }
 
 function Write-ProbeLog {
     param([string]$Message)

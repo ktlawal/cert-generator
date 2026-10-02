@@ -18,7 +18,13 @@
 #>
 
 [CmdletBinding()]
-param([string]$OutputFolder = $PSScriptRoot)
+param([string]$OutputFolder)
+
+# Windows PowerShell 5.1 leaves $PSScriptRoot empty while it binds parameter
+# defaults when a script is started with -File, so a default of
+# "$PSScriptRoot\x" becomes "\x". Defaults that need the script's folder are
+# filled in here, in the body, where $PSScriptRoot is set in every version.
+if (-not $OutputFolder) { $OutputFolder = $PSScriptRoot }
 
 Import-Module (Join-Path $PSScriptRoot 'AppleCert.psm1') -Force -ErrorAction Stop
 $options = Import-CertificateOption -Path (Join-Path $PSScriptRoot 'CertificateOptions.json')
