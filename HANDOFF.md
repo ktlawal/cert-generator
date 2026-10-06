@@ -323,7 +323,7 @@ Then, from a technician PC, at `https://<lab-machine>.<domain>:5000/applecert/`:
 | The POST refuses what it should | `Origin: null`, no Origin, a foreign Origin (403); future date, an option not in the file, a bad serial (400); 20 KB body (413). None issued anything. Device fields added to the form were ignored and Apple was asked again. |
 | Group check covers everything | With the user outside the group: form, device page, stored certificate and POST all 403; `/health` 200. |
 | Register | Stored page served byte for byte; register hash = SHA-256 of the file; a formula in the notes is stored escaped and read back intact; history newest first; a file already at the next number is skipped, never overwritten; numbers restart each year. |
-| Apple lookup on the lab machine | `Test-AppleLookup.ps1` under Windows PowerShell 5.1: key loaded (P-256), assertion signed, token received (lengths only shown), device returned. 6 Oct 2026. |
+| Apple lookup on the lab machine | `Test-AppleLookup.ps1` under Windows PowerShell 5.1: key loaded (P-256), assertion signed, token received (lengths only shown), devices returned, both an assigned one (`status` `ASSIGNED`, no release date) and a released one. 6 Oct 2026. `deviceModel` varies in detail: "iPad Pro 11-inch" for a recent device, just "iPad" for an older one; the certificate prints it as given. |
 | Released devices are returned | The device tested was released in August 2026: returned with `releasedFromOrgDateTime` set. |
 
 **Not verified yet:** the app itself on the lab machine (step 4).
