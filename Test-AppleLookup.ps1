@@ -78,8 +78,8 @@ catch {
 Write-Host ""
 if (-not $result.Found) {
     Write-Host "  Not found (HTTP $($result.Status)): $($result.Message)" -ForegroundColor Yellow
-    Write-Host "  If this serial was released from the organization, record that: a released" -ForegroundColor Yellow
-    Write-Host "  device is NOT returned, so the certificate must be issued before release." -ForegroundColor Yellow
+    Write-Host "  If this device has been released from Apple Business, it cannot be certified:" -ForegroundColor Yellow
+    Write-Host "  released devices are not reliably returned. Issue certificates before release." -ForegroundColor Yellow
     exit 2
 }
 

@@ -117,6 +117,7 @@ $PageCss = @'
          border-left-width: 3px; border-radius: 8px; background: #fef4f3;
          color: #b3261e; font-size: 13.5px; line-height: 1.5; }
   .err ul { margin: 6px 0 0; padding-left: 18px; }
+  .err .why { display: block; margin-top: 6px; color: #7a2e28; }
   .warn { margin: 0 0 22px; padding: 12px 14px; border: 1px solid #f5d48a;
           border-left-width: 3px; border-radius: 8px; background: #fffaeb;
           color: #7a4c00; font-size: 13.5px; line-height: 1.5; }
@@ -208,11 +209,20 @@ function Format-SignedIn {
     "Signed in as $who"
 }
 
+# Shown under "no device with that serial". Apple Business does not reliably
+# keep released devices visible to the API, so certificates are issued before
+# a device is released.
+$NotFoundHint = 'If this device has been released from Apple Business, it cannot be certified here. Issue certificates before releasing devices.'
+
 function New-FormPage {
-    param([string]$Error, [string]$Serial, $Technician)
+    param([string]$Error, [string]$Serial, $Technician, [string]$Hint)
 
     $errHtml = ''
-    if ($Error) { $errHtml = "      <p class=`"err`">$(ConvertTo-HtmlText $Error)</p>`n" }
+    if ($Error) {
+        $hintHtml = ''
+        if ($Hint) { $hintHtml = "<span class=`"why`">$(ConvertTo-HtmlText $Hint)</span>" }
+        $errHtml = "      <p class=`"err`">$(ConvertTo-HtmlText $Error)$hintHtml</p>`n"
+    }
 
     $body = @"
       <h1>Look up a device</h1>
@@ -525,7 +535,7 @@ try {
                     $result = Get-AppleBusinessDevice -Serial $serial -Config $config
                     if (-not $result.Found) {
                         $status = 404
-                        $body = New-FormPage -Technician $tech -Serial $serial -Error $result.Message
+                        $body = New-FormPage -Technician $tech -Serial $serial -Error $result.Message -Hint $NotFoundHint
                         Write-RequestLog -User $user -Serial $serial -Outcome 'not found in Apple Business'
                     } else {
                         $history = @(Get-CertificateHistory -DataPath $config.DataPath -Serial $serial)
@@ -585,7 +595,7 @@ try {
                         $result = Get-AppleBusinessDevice -Serial $serial -Config $config
                         if (-not $result.Found) {
                             $status = 404
-                            $body = New-FormPage -Technician $tech -Serial $serial -Error $result.Message
+                            $body = New-FormPage -Technician $tech -Serial $serial -Error $result.Message -Hint $NotFoundHint
                             Write-RequestLog -User $user -Serial $serial -Outcome 'rejected POST (not in Apple Business)'
                         }
                         else {
