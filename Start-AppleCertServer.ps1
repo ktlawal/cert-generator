@@ -146,6 +146,10 @@ $PageCss = @'
   .foot { margin-top: 26px; font-size: 12.5px; color: #98a2b3; line-height: 1.5; }
   .foot a { color: #667085; }
 
+  /* The device page has no left panel: one centred column, room for the form. */
+  body.single { grid-template-columns: minmax(0,1fr); }
+  body.single .right { place-items: start center; padding: 48px 40px; }
+
   @media (max-width: 720px) {
     body { grid-template-columns: minmax(0,1fr); grid-template-rows: auto 1fr; }
     .left { padding: 28px 24px; align-items: stretch; }
@@ -158,9 +162,24 @@ $PageCss = @'
 '@
 
 function New-SplitPage {
-    param([string]$Title, [string]$Body, [switch]$Wide)
+    <#
+        Every page shares one shell. -NoPanel drops the left panel (the device
+        page, once a lookup has been made) and centres the working column.
+    #>
+    param([string]$Title, [string]$Body, [switch]$Wide, [switch]$NoPanel)
     $cls = 'form'
     if ($Wide) { $cls = 'form wide' }
+    $bodyTag = '<body>'
+    $panel = @'
+  <div class="left">
+    <div class="inner">
+      <div class="mark">PC DECOMMISSIONING</div>
+      <h2>Apple Devices:<br />Certificate of data erasure</h2>
+      <p>Looks the device up in Apple Business, records how it was wiped, and issues a numbered certificate to save as PDF.</p>
+    </div>
+  </div>
+'@
+    if ($NoPanel) { $bodyTag = '<body class="single">'; $panel = '' }
     @"
 <!DOCTYPE html>
 <html lang="en">
@@ -170,15 +189,8 @@ function New-SplitPage {
 <title>$(ConvertTo-HtmlText $Title)</title>
 <style>$PageCss</style>
 </head>
-<body>
-  <div class="left">
-    <div class="inner">
-      <div class="mark">Apple Devices</div>
-      <h2>Certificate of<br />data erasure</h2>
-      <p>Looks the device up in Apple Business, records how it was wiped, and issues a numbered certificate to save as PDF.</p>
-    </div>
-  </div>
-  <div class="right">
+$bodyTag
+$panel  <div class="right">
     <div class="$cls">
 $Body
     </div>
@@ -352,7 +364,7 @@ $errHtml      <form method="post" action="${BasePath}certificate">
       </form>
       <p class="foot">$(Format-SignedIn $Technician)<br /><a href="$BasePath">&larr; look up another device</a></p>
 "@
-    New-SplitPage -Title "$serial - Apple Device Erasure Certificate" -Body $body -Wide
+    New-SplitPage -Title "$serial - Apple Device Erasure Certificate" -Body $body -Wide -NoPanel
 }
 
 
