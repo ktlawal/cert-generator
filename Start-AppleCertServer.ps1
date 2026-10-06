@@ -217,11 +217,10 @@ $Body
 }
 
 function Format-SignedIn {
-    param($Technician)
-    if (-not $Technician) { return '' }
-    $who = ConvertTo-HtmlText $Technician.DisplayName
-    if ($Technician.Email) { $who += " &middot; $(ConvertTo-HtmlText $Technician.Email)" }
-    "Signed in as $who"
+    # As AppFilter: the Windows account, DOMAIN\username. Landing page only.
+    param([string]$User)
+    if (-not $User) { return '' }
+    "Signed in as $(ConvertTo-HtmlText $User)"
 }
 
 # Shown under "no device with that serial". Apple Business does not reliably
@@ -230,7 +229,7 @@ function Format-SignedIn {
 $NotFoundHint = 'If this device has been released from Apple Business, it cannot be certified here. Issue certificates before releasing devices.'
 
 function New-FormPage {
-    param([string]$Error, [string]$Serial, $Technician, [string]$Hint)
+    param([string]$Error, [string]$Serial, [string]$User, [string]$Hint)
 
     $errHtml = ''
     if ($Error) {
@@ -247,7 +246,7 @@ $errHtml      <form method="get" action="${BasePath}device">
                spellcheck="false" maxlength="32" placeholder="C02XXXXXXXXX" value="$(ConvertTo-HtmlText $Serial)" />
         <button type="submit">Look up</button>
       </form>
-      <p class="foot">$(Format-SignedIn $Technician)</p>
+      <p class="foot">$(Format-SignedIn $User)</p>
 "@
     New-SplitPage -Title 'Apple Device Erasure Certificate' -Body $body
 }
@@ -302,7 +301,6 @@ function New-DevicePage {
     param(
         [Parameter(Mandatory)]$Device,
         [object[]]$History = @(),
-        $Technician,
         [string[]]$Problems = @(),
         [hashtable]$Values = @{}
     )
@@ -415,7 +413,7 @@ $errHtml      <form method="post" action="${BasePath}certificate">
         </div>
         <button type="submit">Generate certificate</button>
       </form>
-      <p class="foot">$(Format-SignedIn $Technician)<br /><a href="$BasePath">&larr; look up another device</a></p>
+      <p class="foot"><a href="$BasePath">&larr; look up another device</a></p>
 "@
     New-SplitPage -Title "$serial - Apple Device Erasure Certificate" -Body $body -Wide -NoPanel
 }
@@ -560,17 +558,15 @@ try {
                 Write-RequestLog -User $user -Serial '-' -Outcome "REFUSED (not in $($config.AllowedGroup)) $method $path"
             }
             elseif ($path -match '^/?$' -and $method -eq 'GET') {
-                $tech = Get-TechnicianIdentity -Principal $principal
-                $body = New-FormPage -Technician $tech
+                $body = New-FormPage -User $user
             }
             elseif ($path -match '^/device/?$' -and $method -eq 'GET') {
                 $serial = ([string]$req.QueryString['serial']).Trim().ToUpperInvariant()
                 $serialForLog = $serial
-                $tech = Get-TechnicianIdentity -Principal $principal
 
                 if (-not (Test-SerialNumber $serial)) {
                     $status = 400
-                    $body = New-FormPage -Technician $tech -Serial $serial `
+                    $body = New-FormPage -User $user -Serial $serial `
                                 -Error 'That does not look like a serial number. Letters and digits only, up to 32.'
                     Write-RequestLog -User $user -Serial $serial -Outcome 'rejected (bad serial)'
                 }
@@ -578,11 +574,11 @@ try {
                     $result = Get-AppleBusinessDevice -Serial $serial -Config $config
                     if (-not $result.Found) {
                         $status = 404
-                        $body = New-FormPage -Technician $tech -Serial $serial -Error $result.Message -Hint $NotFoundHint
+                        $body = New-FormPage -User $user -Serial $serial -Error $result.Message -Hint $NotFoundHint
                         Write-RequestLog -User $user -Serial $serial -Outcome 'not found in Apple Business'
                     } else {
                         $history = @(Get-CertificateHistory -DataPath $config.DataPath -Serial $serial)
-                        $body = New-DevicePage -Device $result.Device -History $history -Technician $tech
+                        $body = New-DevicePage -Device $result.Device -History $history
                         Write-RequestLog -User $user -Serial $serial -Outcome "device shown ($($history.Count) existing)"
                     }
                 }
@@ -629,7 +625,7 @@ try {
 
                     if (-not (Test-SerialNumber $serial)) {
                         $status = 400
-                        $body = New-FormPage -Technician $tech -Error 'That does not look like a serial number.'
+                        $body = New-FormPage -User $user -Error 'That does not look like a serial number.'
                         Write-RequestLog -User $user -Serial $serial -Outcome 'rejected POST (bad serial)'
                     }
                     else {
@@ -638,7 +634,7 @@ try {
                         $result = Get-AppleBusinessDevice -Serial $serial -Config $config
                         if (-not $result.Found) {
                             $status = 404
-                            $body = New-FormPage -Technician $tech -Serial $serial -Error $result.Message -Hint $NotFoundHint
+                            $body = New-FormPage -User $user -Serial $serial -Error $result.Message -Hint $NotFoundHint
                             Write-RequestLog -User $user -Serial $serial -Outcome 'rejected POST (not in Apple Business)'
                         }
                         else {
@@ -649,7 +645,7 @@ try {
                             if ($problems.Count -gt 0) {
                                 $status = 400
                                 $history = @(Get-CertificateHistory -DataPath $config.DataPath -Serial $serial)
-                                $body = New-DevicePage -Device $result.Device -History $history -Technician $tech `
+                                $body = New-DevicePage -Device $result.Device -History $history `
                                             -Problems $problems -Values $values
                                 Write-RequestLog -User $user -Serial $serial -Outcome "rejected POST ($($problems -join ' '))"
                             }
