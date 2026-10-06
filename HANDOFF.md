@@ -14,7 +14,7 @@ Apple Business lookup -> certificate data (Apple + technician) -> certificate HT
 | Step | State |
 |---|---|
 | 1. Decisions | **Agreed**, below |
-| 2. Prove the runtime on the lab machine | **Mostly done (2 Oct 2026)**: tests pass under 5.1; listener, silent sign-in and the Origin check proven as SYSTEM. Still to run: 2c (Apple lookup, released device) |
+| 2. Prove the runtime on the lab machine | **Done (2 Oct–6 Oct 2026)**: tests pass under 5.1; listener, silent sign-in, group, AD and the Origin check proven as SYSTEM; the Apple lookup works through the module under 5.1, and released devices are returned |
 | 3. Certificate HTML matching the Word template | **Approved (2 Oct 2026)**: one Letter page each, no browser header or footer with the box ticked, colours kept, file name from the title — checked in Edge |
 | 4. Pages (serial form, device page, certificate routes) | **Built**: `Start-AppleCertServer.ps1`. Tested end to end in a browser here with stand-ins for Apple, AD and the group; **not yet run on the lab machine** |
 | 5. Register and the rest of the tests | **Built**: register in the module, 149 offline checks |
@@ -143,7 +143,13 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\Solutions\AppleCertGe
 Then once with the serial of a device **already released** from Apple
 Business. Exit code 2 / "Not found" means released devices are not returned, so
 the certificate must be issued **before** a device is released; a record with
-`releasedFromOrgDateTime` set means they are. Record which one here.
+`releasedFromOrgDateTime` set means they are.
+
+**Result (6 Oct 2026): released devices ARE returned.** A device released from
+Apple Business in August 2026 came back with `releasedFromOrgDateTime` set and
+`status` `DEVICE_ASSIGNMENT_UNKNOWN`, all certificate fields present. So a
+certificate can still be issued after release. The device page shows a
+"Released from Apple Business" row for such devices.
 
 ### 2d. Listener, Windows sign-in, group, AD, Origin — as SYSTEM
 
@@ -317,6 +323,7 @@ Then, from a technician PC, at `https://<lab-machine>.<domain>:5000/applecert/`:
 | The POST refuses what it should | `Origin: null`, no Origin, a foreign Origin (403); future date, an option not in the file, a bad serial (400); 20 KB body (413). None issued anything. Device fields added to the form were ignored and Apple was asked again. |
 | Group check covers everything | With the user outside the group: form, device page, stored certificate and POST all 403; `/health` 200. |
 | Register | Stored page served byte for byte; register hash = SHA-256 of the file; a formula in the notes is stored escaped and read back intact; history newest first; a file already at the next number is skipped, never overwritten; numbers restart each year. |
+| Apple lookup on the lab machine | `Test-AppleLookup.ps1` under Windows PowerShell 5.1: key loaded (P-256), assertion signed, token received (lengths only shown), device returned. 6 Oct 2026. |
+| Released devices are returned | The device tested was released in August 2026: returned with `releasedFromOrgDateTime` set. |
 
-**Not verified yet:** the Apple API itself (2c), whether released devices are
-returned, and the app itself on the lab machine (step 4).
+**Not verified yet:** the app itself on the lab machine (step 4).
