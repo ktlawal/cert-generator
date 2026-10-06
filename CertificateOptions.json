@@ -4,7 +4,9 @@
     "Options": [
       "Erase All Content and Settings",
       "MDM Remote Wipe",
-      "Restore via Finder/iTunes"
+      "Restore via Finder/iTunes",
+      "Disk Utility Erase (macOS Recovery)",
+      "Restore via Apple Configurator"
     ]
   },
   "ComplianceStandard": {

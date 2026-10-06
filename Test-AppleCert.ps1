@@ -127,7 +127,12 @@ Assert-That 'CSP no unsafe-inline script' ($headers['Content-Security-Policy'] -
 
 Write-Host "`nOptions file" -ForegroundColor Cyan
 $options = Import-CertificateOption -Path $OptionsPath
-Assert-That 'three wipe methods'     @($options.WipeMethod.Options).Count         3
+Assert-That 'five wipe methods'      @($options.WipeMethod.Options).Count         5
+foreach ($m in 'Disk Utility Erase (macOS Recovery)', 'Restore via Apple Configurator') {
+    $ok = @(Test-CertificateInput -Options $options -WipeMethod $m -ComplianceStandard $options.ComplianceStandard.Default `
+              -WipeDate '2026-10-01' -Today ([datetime]'2026-10-01')).Count
+    Assert-That "Mac method accepted: $m" $ok 0
+}
 Assert-That 'wipe method default'    $options.WipeMethod.Default                  'Erase All Content and Settings'
 # One option must still be a list, not a bare string, on 5.1.
 Assert-That 'one compliance standard' @($options.ComplianceStandard.Options).Count 1
