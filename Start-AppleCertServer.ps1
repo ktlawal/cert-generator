@@ -128,9 +128,21 @@ $PageCss = @'
   /* Device details: read-only, from Apple. */
   /* Two columns of label-over-value in a light card. Model and serial are
      in the heading above, so they are not repeated here. */
+  .device { margin: 0 0 24px; border: 1px solid #eaecf0; border-radius: 12px; background: #fcfcfd;
+            overflow: hidden; }
+  .device .dhead { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px;
+                   padding: 18px 20px 14px; border-bottom: 1px solid #eaecf0; }
+  .device h1 { margin: 0; font-size: 22px; }
+  .device .sub { font-size: 14px; color: #667085; margin-top: 4px; }
   .facts { display: grid; grid-template-columns: minmax(0,1fr) minmax(0,1fr); gap: 14px 28px;
-           margin: 0 0 24px; padding: 18px 20px; border: 1px solid #eaecf0; border-radius: 12px;
-           background: #fcfcfd; }
+           padding: 16px 20px 18px; }
+  /* Apple's assignment status. Green: assigned. Amber: anything else.
+     Red: Apple gives a release date - the case to stop and think about. */
+  .badge { flex: none; white-space: nowrap; font-size: 12px; font-weight: 700; letter-spacing: .04em;
+           padding: 4px 10px; border-radius: 999px; border: 1px solid; }
+  .badge.ok   { background: #ecfdf3; color: #067647; border-color: #abefc6; }
+  .badge.note { background: #fffaeb; color: #93370d; border-color: #fedf89; }
+  .badge.bad  { background: #fef3f2; color: #b42318; border-color: #fecdca; }
   .facts div span { display: block; font-size: 11px; font-weight: 600; letter-spacing: .08em;
                     text-transform: uppercase; color: #98a2b3; margin-bottom: 2px; }
   .facts div b { display: block; font-weight: 500; font-size: 15px; color: #101828; overflow-wrap: anywhere; }
@@ -262,6 +274,25 @@ function Format-IsoDate {
     $Value
 }
 
+function ConvertTo-ReadableText {
+    # Apple sends colours and statuses in capitals with underscores:
+    # "SPACE GRAY" -> "Space Gray", "DEVICE_ASSIGNMENT_UNKNOWN" -> "Device Assignment Unknown".
+    # Display only; nothing printed on the certificate changes.
+    param([string]$Text)
+    if (-not $Text) { return '' }
+    $t = $Text.Replace('_', ' ').Trim().ToLowerInvariant()
+    [Globalization.CultureInfo]::InvariantCulture.TextInfo.ToTitleCase($t)
+}
+
+function Format-StatusBadge {
+    param([string]$Status, [string]$Released)
+    if ($Released) { return '<span class="badge bad">&#9679; Released</span>' }
+    if (-not $Status) { return '<span class="badge note">&#9679; Status unknown</span>' }
+    $cls = 'note'
+    if ($Status -eq 'ASSIGNED') { $cls = 'ok' }
+    "<span class=`"badge $cls`">&#9679; $(ConvertTo-HtmlText (ConvertTo-ReadableText $Status))</span>"
+}
+
 function New-DevicePage {
     <#
         Apple's record (read-only), any certificates already issued for the
@@ -285,11 +316,11 @@ function New-DevicePage {
         @('Serial Number',   $serial),
         @('Device Capacity', (Get-DataProperty $Device 'deviceCapacity')),
         @('Part Number',     (Get-DataProperty $Device 'partNumber')),
-        @('Colour',          (Get-DataProperty $Device 'color')),
-        @('Status',          (Get-DataProperty $Device 'status')),
+        @('Colour',          (ConvertTo-ReadableText ([string](Get-DataProperty $Device 'color')))),
         @('Added to Apple Business', (Format-IsoDate ([string](Get-DataProperty $Device 'addedToOrgDateTime'))))
     )
     $released = [string](Get-DataProperty $Device 'releasedFromOrgDateTime')
+    $badge = Format-StatusBadge -Status ([string](Get-DataProperty $Device 'status')) -Released $released
     if ($released) { $facts += ,@('Released from Apple Business', (Format-IsoDate $released)) }
 
     # The heading carries the serial, and the model when Apple gives one, so
@@ -347,9 +378,14 @@ $($items -join "`n")
     if (-not $title) { $title = 'Device' }
 
     $body = @"
-      <h1>$(ConvertTo-HtmlText $title)<span class="sub">Serial $(ConvertTo-HtmlText $serial) &middot; from Apple Business</span></h1>
-      <div class="facts">
+      <div class="device">
+        <div class="dhead">
+          <div><h1>$(ConvertTo-HtmlText $title)</h1><div class="sub">Serial $(ConvertTo-HtmlText $serial) &middot; from Apple Business</div></div>
+          $badge
+        </div>
+        <div class="facts">
 $($factRows -join "`n")
+        </div>
       </div>
 $historyHtml
 $errHtml      <form method="post" action="${BasePath}certificate">
