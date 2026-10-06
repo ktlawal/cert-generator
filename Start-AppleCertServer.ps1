@@ -191,7 +191,7 @@ function New-SplitPage {
     <div class="inner">
       <div class="mark">PC DECOMMISSIONING</div>
       <h2>Apple Devices:<br />Certificate of data erasure</h2>
-      <p>Looks the device up in Apple Business, records how it was wiped, and issues a numbered certificate to save as PDF.</p>
+      <p>Looks the device up in Apple Business, records how it was wiped, and issues a certificate to save as PDF.</p>
     </div>
   </div>
 '@
