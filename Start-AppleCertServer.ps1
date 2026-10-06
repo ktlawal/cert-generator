@@ -126,11 +126,14 @@ $PageCss = @'
   .warn a { color: #7a4c00; font-weight: 600; }
 
   /* Device details: read-only, from Apple. */
-  table.facts { width: 100%; border-collapse: collapse; margin: 0 0 24px; font-size: 14px; }
-  table.facts th, table.facts td { text-align: left; vertical-align: top; padding: 7px 0;
-                                   border-bottom: 1px solid #f2f4f7; }
-  table.facts th { width: 38%; font-weight: 500; color: #667085; padding-right: 12px; }
-  table.facts td { color: #101828; overflow-wrap: anywhere; }
+  /* Two columns of label-over-value in a light card. Model and serial are
+     in the heading above, so they are not repeated here. */
+  .facts { display: grid; grid-template-columns: minmax(0,1fr) minmax(0,1fr); gap: 14px 28px;
+           margin: 0 0 24px; padding: 18px 20px; border: 1px solid #eaecf0; border-radius: 12px;
+           background: #fcfcfd; }
+  .facts div span { display: block; font-size: 11px; font-weight: 600; letter-spacing: .08em;
+                    text-transform: uppercase; color: #98a2b3; margin-bottom: 2px; }
+  .facts div b { display: block; font-weight: 500; font-size: 15px; color: #101828; overflow-wrap: anywhere; }
   .muted { color: #98a2b3; font-size: 13px; margin: -12px 0 24px; }
 
   /* The technician's choices. */
@@ -289,10 +292,14 @@ function New-DevicePage {
     $released = [string](Get-DataProperty $Device 'releasedFromOrgDateTime')
     if ($released) { $facts += ,@('Released from Apple Business', (Format-IsoDate $released)) }
 
+    # The heading carries the serial, and the model when Apple gives one, so
+    # the grid does not repeat them.
     $factRows = foreach ($f in $facts) {
+        if ($f[0] -eq 'Serial Number') { continue }
+        if ($f[0] -eq 'Model' -and $model) { continue }
         $v = [string]$f[1]
         if (-not $v) { $v = '&mdash;' } else { $v = ConvertTo-HtmlText $v }
-        "        <tr><th>$($f[0])</th><td>$v</td></tr>"
+        "        <div><span>$($f[0])</span><b>$v</b></div>"
     }
 
     # Already certified? Say so plainly, with links, but do not block: a device
@@ -341,9 +348,9 @@ $($items -join "`n")
 
     $body = @"
       <h1>$(ConvertTo-HtmlText $title)<span class="sub">Serial $(ConvertTo-HtmlText $serial) &middot; from Apple Business</span></h1>
-      <table class="facts">
+      <div class="facts">
 $($factRows -join "`n")
-      </table>
+      </div>
 $historyHtml
 $errHtml      <form method="post" action="${BasePath}certificate">
         <input type="hidden" name="serial" value="$(ConvertTo-HtmlText $serial)" />
