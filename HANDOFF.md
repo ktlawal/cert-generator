@@ -242,9 +242,16 @@ refusals are logged. Errors show a generic page; the detail goes to the log.
 Numbers come from the highest already used that year, in the files or the
 register, plus one; they restart each January.
 
-**Testing before go-live:** test certificates are real register entries. Before
-real use, stop the task and delete `register.csv` and the `Certificates` folder
-so numbering starts again at `000001` — or ask for a "TEST" mode instead.
+**Testing before go-live (decided: no test mode):** test certificates are real
+register entries. Before real use, stop the task and delete `register.csv` and
+the `Certificates` folder (and `AppleCertServer.log`, if you want a clean log),
+so numbering starts again at `000001`:
+
+```powershell
+Stop-ScheduledTask -TaskName 'AppleCert server'
+Remove-Item C:\ProgramData\AppleCert\register.csv, C:\ProgramData\AppleCert\Certificates -Recurse
+Start-ScheduledTask -TaskName 'AppleCert server'
+```
 
 ## Step 4 — run the app on the lab machine
 
