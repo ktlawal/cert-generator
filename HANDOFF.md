@@ -312,6 +312,49 @@ Then, from a technician PC, at `https://<lab-machine>.<domain>:5000/applecert/`:
 **After changing the config or the code:** `Stop-ScheduledTask` then
 `Start-ScheduledTask` — the server reads both only at startup.
 
+## Security audit, 7 Oct 2026
+
+A full read of `AppleCert.psm1` and `Start-AppleCertServer.ps1`, a search of
+the whole git history, and live probing of a copy of the server with
+stand-ins for Apple, AD and the group check. Nothing was changed by the audit
+itself; fixes wait on a decision, finding by finding.
+
+| | Finding | State |
+|---|---|---|
+| M-1 | **One slow request stalls the app for everyone.** The server handles one request at a time and sets no timeouts. A POST that announces a body and then sends it slowly held the server for 23 s in testing; on Windows http.sys waits about 2 minutes by default, and it can be repeated. Calls to Apple have no timeout either (100 s default). Any domain account can do it while `AllowedGroup` is Domain Users. | **Open.** Fix: short http.sys timeouts (`$listener.TimeoutManager`: body and header waits ~10–15 s) and `-TimeoutSec 20` on the two Apple calls. |
+| M-2 | **Every request line is also written to `task-output.log` in the code folder.** `Write-RequestLog` echoes to the console, and the startup task captures the console with `*>`. That file never rotates, so it grows for as long as the server runs, and it sits outside the locked `C:\ProgramData\AppleCert`. | **Open.** Fix: echo request lines only in an interactive session; keep start/stop/failure lines in the task output. |
+| M-3 | **Any domain account can use the app.** `AllowedGroup` is Domain Users by decision, so anyone in the domain can issue a certificate in their own name and open any stored certificate (device details, technician name and email). Every action is logged against the account. | **Accepted for now** (2 Oct). Narrow `AllowedGroup` in the config before wider use. |
+| M-4 | **The API key is more powerful than the app.** The code can only make a GET to `/v1/orgDevices/{serial}` (and a test enforces it), but `business.api` itself can release devices and change users and groups. A stolen key is only as limited as the API account's role. | **To verify on site:** the Apple Business API account has a custom, view-only role; the only copy of the key is in `C:\ProgramData\AppleCert` (earlier copies, e.g. where the original lookup script pointed, deleted); `icacls C:\ProgramData\AppleCert` shows only SYSTEM and Administrators. |
+| L-1 | **No lower limit on the wipe date.** `1900-01-01` was accepted; future dates are refused. | **Open.** Suggested: no more than 90 days back (or a limit you choose). |
+| L-2 | **Invisible text-direction characters in notes survive onto the certificate.** A right-to-left override can make printed notes read differently from what is stored. Only the technician's own notes; low impact. | **Open.** Fix: strip Unicode direction and zero-width controls in notes. |
+| L-3 | **No `Cache-Control: no-store`.** Device pages and certificates can stay in a browser's cache on a shared PC. | **Open.** Fix: add the header to every response. |
+| L-4 | **An oversized chunked body gives a generic 500**, logged as ERROR, instead of a clean 413. Nothing is issued. | **Open.** Cosmetic. |
+| L-5 | **The register is not tamper-proof against administrators, and has no backup.** The SHA-256 detects accidental change, not an administrator editing both the page and the row. Everything is on one disk. | **Open.** Suggested: a scheduled copy of `register.csv` and `Certificates` to a share the lab machine's administrators cannot alter. |
+| L-6 | **NTLM fallback without Extended Protection.** Kerberos is what browsers use here, but NTLM is still offered; without channel binding, a relayed NTLM sign-in could issue a certificate in a victim's name. Theoretical on this network. | **Open, optional.** Fix: `ExtendedProtectionPolicy` = WhenSupported; test in Edge before keeping it. |
+| L-7 | **Opening `register.csv` in Excel on the server blocks issuing.** Excel locks the file; issuing then fails safely (500, the half-written page removed). | **Operational:** copy the register before opening it. |
+
+**Checked and sound (probed live where marked ●):**
+
+- ● **Cross-site scripting.** Hostile serials, Apple data (`<img onerror>` in the model), notes and asset tags are all escaped on every page and in stored certificates. The CSP allows no script but the print button's exact handler.
+- ● **CSRF.** The POST needs an exact Origin. `null`, missing, wrong case, a trailing slash, another port, a look-alike domain and two Origin headers were all refused.
+- ● **Path traversal.** IDs and serials are matched against exact patterns ending `\z`. Traversal, NUL, extra digits and lower-case IDs all gave 404.
+- ● **Access control.** A non-member got 403 on the form, the device page, a stored certificate and the POST; only `/health` answers.
+- ● **Device details come only from Apple.** Device fields added to the form were ignored; the POST asks Apple again.
+- ● **Form tampering.** Duplicate fields, impossible dates, an option not in the file and a JSON body were refused (400).
+- ● **Register CSV injection.** A value starting `=` was stored as `'=…`.
+- ● **Headers.** CSP, nosniff, frame-deny and `Referrer-Policy: same-origin` on every response, errors included.
+- **Secrets.** Git history holds no key, client ID, host name, account or real serial. The token is in memory only; logs carry lengths, never values.
+- **Errors.** Pages show generic text; detail goes to the log.
+- **Certificates are never overwritten**, and each one's hash is recorded.
+- **HSTS deliberately not added:** it would apply to every service on the host name, not only port 5000.
+
+**Not a finding, but worth knowing:** the origin check stops *browsers* being
+tricked. An allowed user writing their own script can still issue
+certificates, under their own name, and the log shows who.
+
+**Availability reminder:** the TLS certificate shared with AppFilter is pinned
+by thumbprint; when it renews (Dec 2026) both apps stop until it is re-bound.
+
 ## Verified so far, and how
 
 | Claim | How |
