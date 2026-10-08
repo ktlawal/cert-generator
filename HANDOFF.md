@@ -49,6 +49,8 @@ Apple Business lookup -> certificate data (Apple + technician) -> certificate HT
 | `Test-RuntimeProbe.ps1` | Step 2: listener + Windows sign-in + group + AD + Origin check, on the lab machine. |
 | `Test-AppleLookup.ps1` | Step 2: the Apple lookup through the module, with the real config and key. Also the released-device test. |
 | `New-SampleCertificate.ps1` | Step 3: writes two sample certificates (typical, and worst case) with invented data. |
+| `Apple-Certificate-Quick-Reference.docx` | One-page quick reference for technicians, in the style of AppFilter's: the app link, the four routes, how to issue a certificate, and what is worth knowing. The repo copy has `<lab-machine>.<domain>` in the link; the handout with the real address is kept out of the repo. |
+| `tools/build-quick-reference.js` | Rebuilds the quick reference (Node and the `docx` npm package, not needed on the lab machine). Pass the link and the output file. |
 
 ## Apple Business: what the code does and does not do
 
