@@ -381,5 +381,6 @@ by thumbprint; when it renews (Dec 2026) both apps stop until it is re-bound.
 | Register | Stored page served byte for byte; register hash = SHA-256 of the file; a formula in the notes is stored escaped and read back intact; history newest first; a file already at the next number is skipped, never overwritten; numbers restart each year. |
 | Apple lookup on the lab machine | `Test-AppleLookup.ps1` under Windows PowerShell 5.1: key loaded (P-256), assertion signed, token received (lengths only shown), devices returned, both an assigned one (`status` `ASSIGNED`, no release date) and a released one. 6 Oct 2026. `deviceModel` varies in detail: "iPad Pro 11-inch" for a recent device, just "iPad" for an older one; the certificate prints it as given. |
 | Released devices: not reliably returned | One released device (August 2026) was returned with `releasedFromOrgDateTime` set; another, confirmed released in the portal, gave 404. Certify before release. |
+| Audit fixes under 5.1 | Full `Test-AppleCert.ps1` suite (register, notes cleaning, body limits, key, Apple-call checks) passed under Windows PowerShell 5.1 on the lab machine, 8 Oct 2026. |
 
 **Not verified yet:** the app itself on the lab machine (step 4).
