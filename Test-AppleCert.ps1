@@ -353,12 +353,16 @@ try {
     Assert-That 'numbering skips past it'     $c4.CertificateID 'AC-2026-000004'
 
     # A new year starts again at 000001.
-    $c5 = New-IssuedCertificate @issue -IssuedAt ([DateTimeOffset]::new(2027, 1, 2, 9, 0, 0, [TimeSpan]::Zero)) -WipeDate '2027-01-02'
+    # A copy with the one value changed: Windows PowerShell 5.1 refuses a
+    # parameter given both in a splatted table and on the command line.
+    $nextYear = $issue.Clone(); $nextYear.WipeDate = '2027-01-02'
+    $c5 = New-IssuedCertificate @nextYear -IssuedAt ([DateTimeOffset]::new(2027, 1, 2, 9, 0, 0, [TimeSpan]::Zero))
     Assert-That 'numbers restart each year'   $c5.CertificateID 'AC-2027-000001'
 
     # Bad input issues nothing and leaves no file behind.
     $before = @(Get-ChildItem -LiteralPath (Join-Path $reg 'Certificates')).Count
-    Assert-Throws 'bad input refused'         { New-IssuedCertificate @issue -IssuedAt $issued -WipeMethod 'Hammer' } '*wipe method*'
+    $badIssue = $issue.Clone(); $badIssue.WipeMethod = 'Hammer'
+    Assert-Throws 'bad input refused'         { New-IssuedCertificate @badIssue -IssuedAt $issued } '*wipe method*'
     Assert-That 'nothing stored on refusal'   @(Get-ChildItem -LiteralPath (Join-Path $reg 'Certificates')).Count $before
 }
 finally { Remove-Item -LiteralPath $reg -Recurse -Force -ErrorAction SilentlyContinue }
