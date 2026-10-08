@@ -172,7 +172,18 @@ function Import-AppleCertConfig {
         PublicOrigin   = $origin
         AllowedGroup   = ([string]$cfg.AllowedGroup).Trim()
         DataPath       = ([string]$cfg.DataPath).Trim()
+        # Optional: the team mailbox shown as the support contact. Blank when
+        # missing, still the placeholder, or not a plain address, so nothing
+        # odd can reach a page or a mailto: link.
+        SupportEmail   = ConvertTo-SupportEmail ([string](Get-DataProperty $cfg 'SupportEmail'))
     }
+}
+
+function ConvertTo-SupportEmail {
+    param([string]$Value)
+    $v = ([string]$Value).Trim()
+    if ($v -cmatch '^[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}\z') { return $v }
+    ''
 }
 
 function Import-CertificateOption {

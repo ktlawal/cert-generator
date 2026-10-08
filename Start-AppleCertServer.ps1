@@ -83,10 +83,19 @@ $PageCss = @'
          font-family: "Segoe UI", -apple-system, system-ui, Calibri, Arial, sans-serif;
          color: #101828; background: #fff; }
 
-  .left { background: #22254e; color: #fff; padding: 46px 56px 46px 40px;
+  .left { position: relative; background: #22254e; color: #fff; padding: 46px 56px 46px 40px;
           display: flex; flex-direction: column; justify-content: center;
           align-items: flex-end; }
-  .left .inner { max-width: 34ch; }
+  .left .inner { width: 34ch; max-width: 100%; }
+  /* Branding and support, along the bottom of the panel, lined up with the
+     text above. */
+  /* Width in the same ch as .inner (so the same font size here); the small
+     size goes on the lines inside. */
+  .panel-foot { position: absolute; right: 56px; bottom: 30px; width: 34ch;
+                max-width: calc(100% - 96px); }
+  .panel-foot div { font-size: 12.5px; line-height: 1.6; color: #94a3b8; }
+  .panel-foot div.brand { font-weight: 600; color: #cbd5e1; }
+  .panel-foot a { color: #7dd3fc; }
   .mark { font-size: 12px; font-weight: 600; letter-spacing: .14em;
           text-transform: uppercase; color: #7dd3fc; }
   .left h2 { font-size: 26px; font-weight: 600; letter-spacing: -.02em;
@@ -172,6 +181,8 @@ $PageCss = @'
   @media (max-width: 720px) {
     body { grid-template-columns: minmax(0,1fr); grid-template-rows: auto 1fr; }
     .left { padding: 28px 24px; align-items: stretch; }
+    .left .inner { width: auto; }
+    .panel-foot { position: static; width: auto; max-width: none; margin-top: 16px; }
     .left h2 { font-size: 21px; }
     .left p { display: none; }
     .right { padding: 32px 24px; justify-items: stretch; }
@@ -179,6 +190,17 @@ $PageCss = @'
   }
   @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
 '@
+
+function Format-PanelFoot {
+    # "Product of Endpoint Management Team", and the support mailbox from
+    # SupportEmail in the config when one is set.
+    $support = ''
+    if ($config.SupportEmail) {
+        $mail = ConvertTo-HtmlText $config.SupportEmail
+        $support = "<div>Support: <a href=`"mailto:$mail`?subject=Apple%20Certificate%20app`">$mail</a></div>"
+    }
+    "    <div class=`"panel-foot`"><div class=`"brand`">Product of Endpoint Management Team</div>$support</div>`n"
+}
 
 function New-SplitPage {
     <#
@@ -189,15 +211,16 @@ function New-SplitPage {
     $cls = 'form'
     if ($Wide) { $cls = 'form wide' }
     $bodyTag = '<body>'
-    $panel = @'
+    $panel = @"
   <div class="left">
     <div class="inner">
       <div class="mark">PC DECOMMISSIONING</div>
       <h2>Apple Devices:<br />Certificate of data erasure</h2>
       <p>Looks the device up in Apple Business, records how it was wiped, and issues a certificate to save as PDF.</p>
     </div>
-  </div>
-'@
+$(Format-PanelFoot)  </div>
+
+"@
     if ($NoPanel) { $bodyTag = '<body class="single">'; $panel = '' }
     @"
 <!DOCTYPE html>
@@ -522,9 +545,11 @@ catch {
 }
 
 $runtime = "PowerShell $($PSVersionTable.PSVersion) ($($PSVersionTable.PSEdition))"
-Write-ServerLog ("STARTED  https://+:{0}{1}  auth={2}  group={3}  origin={4}  data={5}  {6}  pid={7}" -f
+$supportShown = $config.SupportEmail
+if (-not $supportShown) { $supportShown = '(none - set SupportEmail in the config)' }
+Write-ServerLog ("STARTED  https://+:{0}{1}  auth={2}  group={3}  origin={4}  data={5}  support={6}  {7}  pid={8}" -f
                  $Port, $BasePath, $AuthScheme, $config.AllowedGroup, $config.PublicOrigin,
-                 $config.DataPath, $runtime, $PID)
+                 $config.DataPath, $supportShown, $runtime, $PID)
 
 $security = Get-AppleCertSecurityHeader
 

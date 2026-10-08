@@ -124,8 +124,10 @@ notepad C:\ProgramData\AppleCert\config.json
 
 In `config.json`: `ClientId`, `KeyId`, `PublicOrigin` as
 `https://<lab-machine>.<domain>:5000` (the full name, no trailing slash),
-`AllowedGroup` as `DOMAIN\GroupName`. Leave `PrivateKeyPath` and `DataPath` as
-they are. Backslashes in JSON are doubled: `"DOMAIN\\AppleCert-Users"`.
+`AllowedGroup` as `DOMAIN\GroupName`, and `SupportEmail` as the team mailbox
+shown at the bottom of the blue panel (optional: if it is missing or left as
+the placeholder, only "Product of Endpoint Management Team" shows). Leave
+`PrivateKeyPath` and `DataPath` as they are. Backslashes in JSON are doubled: `"DOMAIN\\AppleCert-Users"`.
 
 ### 2b. Offline tests
 

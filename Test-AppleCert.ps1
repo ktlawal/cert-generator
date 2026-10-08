@@ -154,6 +154,29 @@ try {
 finally { Remove-Item -LiteralPath $tmp -Recurse -Force -ErrorAction SilentlyContinue }
 
 
+Write-Host "`nConfig: support email" -ForegroundColor Cyan
+# SupportEmail is optional. Only a plain address is kept; the placeholder,
+# a blank and anything that could add mail headers or markup become blank.
+$cfgDir = Join-Path ([IO.Path]::GetTempPath()) ("applecert-cfg-" + [Guid]::NewGuid().ToString('n'))
+New-Item -ItemType Directory -Path $cfgDir | Out-Null
+try {
+    $cfgPath = Join-Path $cfgDir 'config.json'
+    function Get-Support([string]$Line) {
+        $base = '"ClientId":"c","KeyId":"k","PrivateKeyPath":"p","PublicOrigin":"https://lab.example.org:5000","AllowedGroup":"D\\G","DataPath":"d"'
+        "{$base$Line}" | Set-Content -LiteralPath $cfgPath -Encoding UTF8
+        (Import-AppleCertConfig -Path $cfgPath).SupportEmail
+    }
+    Assert-That 'plain address kept'        (Get-Support ',"SupportEmail":"endpoint-team@example.org"') 'endpoint-team@example.org'
+    Assert-That 'spaces trimmed'            (Get-Support ',"SupportEmail":"  team@example.org "')       'team@example.org'
+    Assert-That 'missing is blank'          (Get-Support '')                                            ''
+    Assert-That 'placeholder is blank'      (Get-Support ',"SupportEmail":"<team-mailbox>@<domain>"')   ''
+    Assert-That 'extra header refused'      (Get-Support ',"SupportEmail":"a@example.org?bcc=x@evil.example"') ''
+    Assert-That 'markup refused'            (Get-Support ',"SupportEmail":"a@example.org\"><b>"')       ''
+    Assert-That 'two addresses refused'     (Get-Support ',"SupportEmail":"a@example.org,b@example.org"') ''
+}
+finally { Remove-Item -LiteralPath $cfgDir -Recurse -Force -ErrorAction SilentlyContinue }
+
+
 Write-Host "`nTechnician input" -ForegroundColor Cyan
 $today = [datetime]'2026-10-01'
 function Get-Problem {
