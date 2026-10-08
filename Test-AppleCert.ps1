@@ -82,7 +82,7 @@ Assert-That 'hyphen'                 (Test-SerialNumber 'ABC-123')      'False'
 Assert-That 'slash'                  (Test-SerialNumber 'ABC/..')       'False'
 Assert-That 'space'                  (Test-SerialNumber 'ABC 123')      'False'
 Assert-That 'trailing newline'       (Test-SerialNumber "ABC123`n")     'False'
-Assert-That 'non-ASCII digit'        (Test-SerialNumber "ABC١٢٣")       'False'
+Assert-That 'non-ASCII digit'        (Test-SerialNumber "ABC$([char]0x0661)$([char]0x0662)$([char]0x0663)") 'False'
 # Validation happens before any token is requested or URL is built.
 Assert-Throws 'lookup refuses a bad serial' { Get-AppleBusinessDevice -Serial '../v1/users' -Config ([pscustomobject]@{}) } 'Serial number must be*'
 
@@ -120,6 +120,8 @@ $headers = Get-AppleCertSecurityHeader
 Assert-That 'Referrer-Policy'        $headers['Referrer-Policy']        'same-origin'
 Assert-That 'nosniff'                $headers['X-Content-Type-Options'] 'nosniff'
 Assert-That 'frame deny'             $headers['X-Frame-Options']        'DENY'
+# Audit L-3: device pages and certificates must not stay in a shared cache.
+Assert-That 'no-store'               $headers['Cache-Control']          'no-store'
 Assert-That 'CSP frame-ancestors'    ($headers['Content-Security-Policy'] -match "frame-ancestors 'none'") 'True'
 Assert-That 'CSP form-action self'   ($headers['Content-Security-Policy'] -match "form-action 'self'")     'True'
 Assert-That 'CSP no unsafe-inline script' ($headers['Content-Security-Policy'] -match "script-src[^;]*'unsafe-inline'") 'False'
@@ -171,6 +173,13 @@ Assert-That 'wipe date in the past'  (Get-Problem @{ WipeDate = '2026-09-01' }).
 Assert-That 'wipe date not a date'   (Get-Problem @{ WipeDate = '2026-13-01' }).Count 1
 Assert-That 'wipe date other format' (Get-Problem @{ WipeDate = '01/10/2026' }).Count 1
 Assert-That '500-char notes'         (Get-Problem @{ Notes = ('x' * 500) }).Count 0
+# A browser counts a line break as one character but sends CR LF: 495 letters
+# and 5 line breaks are 500 characters as stored, and must be accepted.
+Assert-That 'line breaks count once' (Get-Problem @{ Notes = ((('x' * 99) + "`r`n") * 5).TrimEnd() }).Count 0
+# Audit L-1: no more than 180 days back.
+Assert-That 'wipe date 180 days ago' (Get-Problem @{ WipeDate = $today.AddDays(-180).ToString('yyyy-MM-dd') }).Count 0
+Assert-That 'wipe date 181 days ago' (Get-Problem @{ WipeDate = $today.AddDays(-181).ToString('yyyy-MM-dd') }).Count 1
+Assert-That 'wipe date 1900'         (Get-Problem @{ WipeDate = '1900-01-01' }).Count 1
 Assert-That '501-char notes'         (Get-Problem @{ Notes = ('x' * 501) }).Count 1
 Assert-That 'asset tag'              (Get-Problem @{ AssetTag = 'IT-004521' }).Count 0
 Assert-That 'asset tag with markup'  (Get-Problem @{ AssetTag = '<b>' }).Count 1
@@ -183,6 +192,42 @@ $direct = @(Test-CertificateInput -Options $options -WipeMethod 'Hammer' `
               -ComplianceStandard 'Nope' -WipeDate '2026-10-02' -Today $today)
 Assert-That 'three problems, called directly' $direct.Count 3
 Assert-That 'problems are strings'   ($direct[0] -is [string]) 'True'
+
+
+Write-Host "`nNotes cleaning" -ForegroundColor Cyan
+# Audit L-2: invisible direction and zero-width characters are removed, so the
+# printed notes read exactly as stored.
+$rlo = [string][char]0x202E; $zw = [string][char]0x200B; $iso = [string][char]0x2066
+Assert-That 'right-to-left override removed' (ConvertTo-CleanNotes "abc${rlo}def") 'abcdef'
+Assert-That 'zero-width space removed'       (ConvertTo-CleanNotes "a${zw}b")       'ab'
+Assert-That 'isolate removed'                (ConvertTo-CleanNotes "a${iso}b")      'ab'
+Assert-That 'CR LF to LF, control removed'   (ConvertTo-CleanNotes "one`r`ntwo`a")  "one`ntwo"
+# Written as character codes: Windows PowerShell 5.1 reads a script without a
+# byte-order mark in the ANSI code page, so literal accents would be misread.
+$accents = "Caf$([char]0xE9) $([char]0x2013) na$([char]0xEF)ve"
+Assert-That 'ordinary accents kept'          (ConvertTo-CleanNotes $accents)        $accents
+
+
+Write-Host "`nRequest body limits" -ForegroundColor Cyan
+# Audit M-1 and L-4: the body is read with a size limit that holds however it
+# was sent, and a deadline across the whole body.
+$ms = New-Object IO.MemoryStream (,[Text.Encoding]::UTF8.GetBytes('serial=ABC&notes=x'))
+$r = Read-LimitedBody -Stream $ms -MaxBytes 100 -TimeoutSeconds 5
+Assert-That 'small body read'            $r.Status 'ok'
+Assert-That 'small body text'            $r.Text   'serial=ABC&notes=x'
+$ms = New-Object IO.MemoryStream (,(New-Object byte[] 101))
+Assert-That 'one byte over is too large' (Read-LimitedBody -Stream $ms -MaxBytes 100 -TimeoutSeconds 5).Status 'toolarge'
+$ms = New-Object IO.MemoryStream (,(New-Object byte[] 100))
+Assert-That 'exactly the limit is fine'  (Read-LimitedBody -Stream $ms -MaxBytes 100 -TimeoutSeconds 5).Status 'ok'
+# A connection that never sends its body: a pipe with nobody writing.
+$pipe = New-Object System.IO.Pipes.AnonymousPipeServerStream([System.IO.Pipes.PipeDirection]::In)
+$client = New-Object System.IO.Pipes.AnonymousPipeClientStream([System.IO.Pipes.PipeDirection]::Out, $pipe.ClientSafePipeHandle)
+$sw = [Diagnostics.Stopwatch]::StartNew()
+$r = Read-LimitedBody -Stream $pipe -MaxBytes 100 -TimeoutSeconds 1
+$sw.Stop()
+Assert-That 'stalled body times out'     $r.Status 'timeout'
+Assert-That 'within the deadline'        ($sw.Elapsed.TotalSeconds -lt 3) 'True'
+$client.Dispose(); $pipe.Dispose()
 
 
 Write-Host "`nCertificate data" -ForegroundColor Cyan
@@ -212,7 +257,7 @@ Assert-Throws 'bad certificate ID'    { $b = $base.Clone(); $b.CertificateId = '
 
 Write-Host "`nCertificate page" -ForegroundColor Cyan
 $html = New-CertificateHtml -Data $data -HomeLink '/applecert/'
-Assert-That 'no template placeholders left'  ($html -match '«|»')                        'False'
+Assert-That 'no template placeholders left'  ($html -match "[$([char]0xAB)$([char]0xBB)]") 'False'
 Assert-That 'title'                          ($html -match '>CERTIFICATE OF DATA ERASURE<') 'True'
 Assert-That 'subtitle'                       ($html -match '>Apple Device Wipe Verification<') 'True'
 foreach ($section in 'DEVICE INFORMATION', 'WIPE DETAILS', 'CERTIFICATE DETAILS') {

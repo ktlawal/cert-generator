@@ -67,6 +67,9 @@ Add-Type -AssemblyName System.Web
 # Requests bigger than this are refused before they are read. The form is a
 # few hundred bytes; 500 characters of notes is at most a few KB encoded.
 $MaxBodyBytes = 16KB
+# The whole form must arrive within this many seconds. The server answers one
+# request at a time; without a deadline one slow client stalls everyone.
+$BodyTimeoutSeconds = 10
 
 
 # ------------------------------------------------------------------
@@ -367,7 +370,8 @@ $($items -join "`n")
         }) -join ''
     }
 
-    $today = (Get-Date).ToString('yyyy-MM-dd')
+    $today    = (Get-Date).ToString('yyyy-MM-dd')
+    $earliest = (Get-Date).AddDays(-180).ToString('yyyy-MM-dd')
     $wm = $Values['WipeMethod'];         if (-not $wm) { $wm = $options.WipeMethod.Default }
     $cs = $Values['ComplianceStandard']; if (-not $cs) { $cs = $options.ComplianceStandard.Default }
     $wd = $Values['WipeDate'];           if (-not $wd) { $wd = $today }
@@ -399,7 +403,7 @@ $errHtml      <form method="post" action="${BasePath}certificate">
         <div class="row">
           <div class="field">
             <label for="wipeDate">Wipe date</label>
-            <input type="date" id="wipeDate" name="wipeDate" required max="$today" value="$(ConvertTo-HtmlText $wd)" />
+            <input type="date" id="wipeDate" name="wipeDate" required min="$earliest" max="$today" value="$(ConvertTo-HtmlText $wd)" />
           </div>
           <div class="field">
             <label for="assetTag">Asset tag <span style="text-transform:none;letter-spacing:0;font-weight:400">(optional)</span></label>
@@ -454,7 +458,10 @@ function Write-RequestLog {
     if ($Serial.Length -gt 40) { $Serial = $Serial.Substring(0, 40) }
     $Outcome = ($Outcome -replace '[\x00-\x1f]', '?')
     $line = '{0}  {1,-28} {2,-16} {3}' -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'), $User, $Serial, $Outcome
-    Write-Host $line
+    # Echoed only in an interactive session. Under the startup task the console
+    # is captured into task-output.log, which never rotates and sits outside
+    # the locked data folder; the log file below is the record.
+    if ([Environment]::UserInteractive) { Write-Host $line }
     if (-not $LogPath) { return }
     Limit-LogSize -Path $LogPath
     try { Add-Content -Path $LogPath -Value $line -Encoding UTF8 -ErrorAction Stop }
@@ -493,6 +500,10 @@ $basePrefix = $BasePath.TrimEnd('/')
 $listener = New-Object System.Net.HttpListener
 $listener.Prefixes.Add("https://+:${Port}${BasePath}")
 $listener.AuthenticationSchemes = [System.Net.AuthenticationSchemes]::$AuthScheme
+# http.sys's own limit on a stalled request body (default 2 minutes), as a
+# second line behind Read-LimitedBody's deadline. Applies to this app's URL
+# only, not to AppFilter's. Windows only; elsewhere the setting is absent.
+try { $listener.TimeoutManager.EntityBody = [TimeSpan]::FromSeconds($BodyTimeoutSeconds) } catch { }
 
 try { $listener.Start() }
 catch {
@@ -599,18 +610,22 @@ try {
                     $body = New-ErrorPage -Title 'Request too large' -Detail 'That form was larger than this application accepts.'
                     Write-RequestLog -User $user -Serial '-' -Outcome "REFUSED POST (body $($req.ContentLength64) bytes)"
                 }
-                else {
-                    # Read at most one byte more than allowed, so a request with
-                    # no Content-Length still cannot be made to stream forever.
-                    $buffer = New-Object byte[] ($MaxBodyBytes + 1)
-                    $read = 0
-                    while ($read -lt $buffer.Length) {
-                        $n = $req.InputStream.Read($buffer, $read, $buffer.Length - $read)
-                        if ($n -le 0) { break }
-                        $read += $n
+                elseif (($bodyRead = Read-LimitedBody -Stream $req.InputStream -MaxBytes $MaxBodyBytes `
+                                         -TimeoutSeconds $BodyTimeoutSeconds).Status -ne 'ok') {
+                    # Over the limit however it was sent (chunked has no
+                    # Content-Length), or not all there in time: refuse cleanly
+                    # rather than hold the one request slot.
+                    if ($bodyRead.Status -eq 'toolarge') {
+                        $status = 413
+                        $body = New-ErrorPage -Title 'Request too large' -Detail 'That form was larger than this application accepts.'
+                    } else {
+                        $status = 408
+                        $body = New-ErrorPage -Title 'Request timed out' -Detail 'The form did not arrive in time. Please try again.'
                     }
-                    if ($read -gt $MaxBodyBytes) { throw 'POST body over the limit without a Content-Length.' }
-                    $form = [System.Web.HttpUtility]::ParseQueryString([Text.Encoding]::UTF8.GetString($buffer, 0, $read))
+                    Write-RequestLog -User $user -Serial '-' -Outcome "REFUSED POST (body $($bodyRead.Status))"
+                }
+                else {
+                    $form = [System.Web.HttpUtility]::ParseQueryString($bodyRead.Text)
 
                     $serial = ([string]$form['serial']).Trim().ToUpperInvariant()
                     $serialForLog = $serial

@@ -37,6 +37,10 @@ $script:SerialPattern        = '^[A-Za-z0-9]{1,32}\z'
 $script:CertificateIdPattern = '^AC-\d{4}-\d{6}\z'
 $script:AssetTagPattern      = '^[A-Za-z0-9\-_/]{0,32}\z'
 $script:NotesMaxLength       = 500
+$script:WipeDateMaxAgeDays   = 180
+# Seconds to wait for Apple before giving up, so a hung connection cannot hold
+# the (single-threaded) server for the .NET default of 100 seconds.
+$script:AppleTimeoutSeconds  = 20
 
 # The one inline script any page may run, and the CSP hash that permits it.
 # The hash is over the handler's exact text: change one and the other must
@@ -109,6 +113,8 @@ function Get-AppleCertSecurityHeader {
         'X-Content-Type-Options'  = 'nosniff'
         'X-Frame-Options'         = 'DENY'
         'Referrer-Policy'         = 'same-origin'
+        # Device pages and certificates must not stay in a shared PC's cache.
+        'Cache-Control'           = 'no-store'
     }
 }
 
@@ -401,7 +407,8 @@ function Get-AppleAccessToken {
 
     try {
         $resp = Invoke-RestMethod -Uri $script:AppleTokenUrl -Method Post `
-                    -ContentType 'application/x-www-form-urlencoded' -Body $body -ErrorAction Stop
+                    -ContentType 'application/x-www-form-urlencoded' -Body $body -ErrorAction Stop `
+                    -TimeoutSec $script:AppleTimeoutSeconds
     }
     catch {
         # Apple's error body names the problem (invalid_client and so on) and
@@ -496,6 +503,7 @@ function Get-AppleBusinessDevice {
         $token = Get-AppleAccessToken -Config $Config -Force:($attempt -gt 1)
         try {
             $resp = Invoke-RestMethod -Uri $uri -Method Get -ErrorAction Stop `
+                        -TimeoutSec $script:AppleTimeoutSeconds `
                         -Headers @{ Authorization = "Bearer $token"; Accept = 'application/json' }
             break
         }
@@ -559,9 +567,13 @@ function Test-CertificateInput {
         $errors += 'Wipe date must be a date.'
     } elseif ($parsed.Date -gt $Today.Date) {
         $errors += 'Wipe date cannot be in the future.'
+    } elseif ($parsed.Date -lt $Today.Date.AddDays(-$script:WipeDateMaxAgeDays)) {
+        $errors += "Wipe date can be at most $($script:WipeDateMaxAgeDays) days ago."
     }
 
-    if ($null -ne $Notes -and $Notes.Length -gt $script:NotesMaxLength) {
+    # Measured after cleaning, as it will be stored: a browser counts a line
+    # break as one character against maxlength but submits it as CR LF.
+    if ((ConvertTo-CleanNotes $Notes).Length -gt $script:NotesMaxLength) {
         $errors += "Notes can be at most $($script:NotesMaxLength) characters."
     }
     if ($null -ne $AssetTag -and $AssetTag -cnotmatch $script:AssetTagPattern) {
@@ -580,6 +592,9 @@ function ConvertTo-CleanNotes {
     if ($null -eq $Notes) { return '' }
     $t = $Notes.Replace("`r`n", "`n").Replace("`r", "`n")
     $t = $t -replace '[\x00-\x09\x0B-\x1F\x7F]', ''
+    # Invisible direction and zero-width characters: a right-to-left override
+    # would make the printed notes read differently from what was stored.
+    $t = $t -replace '[\u200B-\u200F\u202A-\u202E\u2060-\u2069\uFEFF]', ''
     $t.Trim()
 }
 
@@ -824,6 +839,38 @@ $cert
 </body>
 </html>
 "@
+}
+
+
+function Read-LimitedBody {
+    <#
+        Reads a request body, refusing to wait or store without limit. The
+        server handles one request at a time, so a client that announced a
+        body and then dribbled it would otherwise hold everyone up.
+
+        Returns Status 'ok' (with Text), 'toolarge' (more than MaxBytes,
+        however it was sent) or 'timeout' (not all there within the deadline,
+        counted across the whole body, not per read).
+    #>
+    param(
+        [Parameter(Mandatory)][System.IO.Stream]$Stream,
+        [Parameter(Mandatory)][int]$MaxBytes,
+        [int]$TimeoutSeconds = 10
+    )
+    $buffer   = New-Object byte[] ($MaxBytes + 1)
+    $read     = 0
+    $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
+    while ($read -lt $buffer.Length) {
+        $left = $deadline - [DateTime]::UtcNow
+        if ($left -le [TimeSpan]::Zero) { return [pscustomobject]@{ Status = 'timeout'; Text = $null } }
+        $task = $Stream.ReadAsync($buffer, $read, $buffer.Length - $read)
+        if (-not $task.Wait($left)) { return [pscustomobject]@{ Status = 'timeout'; Text = $null } }
+        $n = $task.Result
+        if ($n -le 0) { break }
+        $read += $n
+    }
+    if ($read -gt $MaxBytes) { return [pscustomobject]@{ Status = 'toolarge'; Text = $null } }
+    [pscustomobject]@{ Status = 'ok'; Text = [Text.Encoding]::UTF8.GetString($buffer, 0, $read) }
 }
 
 
@@ -1104,6 +1151,7 @@ Export-ModuleMember -Function @(
     'Get-AppleBusinessDevice',
     'Test-CertificateInput', 'New-CertificateData', 'New-CertificateHtml',
     'Resolve-AllowedGroupSid', 'Test-AllowedUser', 'Get-TechnicianIdentity',
+    'Read-LimitedBody', 'ConvertTo-CleanNotes',
     'ConvertTo-CsvSafeText', 'ConvertFrom-CsvSafeText',
     'Get-CertificateRegister', 'Get-CertificateHistory', 'New-CertificateId',
     'New-IssuedCertificate', 'Get-IssuedCertificate'
