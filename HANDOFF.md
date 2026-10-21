@@ -17,7 +17,7 @@ Apple Business lookup -> certificate data (Apple + technician) -> certificate HT
 | 2. Prove the runtime on the lab machine | **Done (2 Oct–6 Oct 2026)**: tests pass under 5.1; listener, silent sign-in, group, AD and the Origin check proven as SYSTEM; the Apple lookup works through the module under 5.1. Released devices are **not reliably** returned: certify before release |
 | 3. Certificate HTML matching the Word template | **Approved (2 Oct 2026)**: one Letter page each, no browser header or footer with the box ticked, colours kept, file name from the title — checked in Edge |
 | 4. Pages (serial form, device page, certificate routes) | **Built**: `Start-AppleCertServer.ps1`. Tested end to end in a browser here with stand-ins for Apple, AD and the group; **not yet run on the lab machine** |
-| 5. Register and the rest of the tests | **Built**: register in the module, 149 offline checks |
+| 5. Register and the rest of the tests | **Built**: register in the module, 223 offline checks (manual certificates included) |
 | 6. Deploy (URL reservation, scheduled task) | URL reserved during step 2. Startup task: commands below, **not yet run** |
 
 ## Decisions
@@ -35,6 +35,7 @@ Apple Business lookup -> certificate data (Apple + technician) -> certificate HT
 | Origin check | On `POST /applecert/certificate`: accept **only** an exact match to `PublicOrigin` from the config. `null`, a missing Origin, `http://`, another port, the short name — all refused (403). |
 | Page | **US Letter**, as the Word template. Columns 2.05" / 4.95", from the template's cell widths (its grid says 50/50, but Word lays out by the cell widths). |
 | Other limits | Notes at most 500 characters (keeps the certificate on one page). Wipe date cannot be in the future, nor more than 180 days back. Devices are always re-fetched from Apple on the POST; nothing about the device is taken from the form. |
+| Manual certificates | For a serial Apple Business does not return (released before it was certified, or never enrolled). Decided 21 Oct. **Off unless `ManualAllowedGroup` is set** in the config; only that group sees the link or can use the routes. Offered only from "not found". The server asks Apple again on the form and on the POST: if Apple has the device the technician is sent to the normal page; if Apple cannot be reached it refuses (an outage is no reason to type details in). A reason is required (Released from Apple Business / Never enrolled in Apple Business / Other, with an explanation for Other). The serial is typed a second time and must match. Device type from a fixed list; model required; capacity and part number optional; each held to a strict pattern. Same `AC-` numbering and register, with `DeviceSource` = `Manual`, `ManualReason` and `ManualReasonDetail` columns. On the certificate, **Notes starts with "Device details entered manually"**, with the technician's notes on the line below. |
 | Existing certificates | The device page lists every certificate already issued for that serial, newest first: ID (linking to `GET /applecert/certificate?id=…`), date issued, wipe method, wipe date and technician, read from the register. It warns but does not block: a technician can still issue a new one, for example when a device is wiped again. The list is read on the server and every value is HTML-escaped. |
 
 ## Files
@@ -45,7 +46,7 @@ Apple Business lookup -> certificate data (Apple + technician) -> certificate HT
 | `CertificateOptions.json` | The dropdown choices and their defaults. A new wipe method is an edit here. |
 | `config.example.json` | The shape of the real config, which lives at `C:\ProgramData\AppleCert\config.json` and never in the repo. |
 | `Start-AppleCertServer.ps1` | The server: listener, routes, sign-in, group check, Origin check, logging. Reads the config at startup. |
-| `Test-AppleCert.ps1` | Offline tests (149 checks), register included. Runs under 5.1 and 7. |
+| `Test-AppleCert.ps1` | Offline tests (223 checks), register and manual certificates included. Runs under 5.1 and 7. |
 | `Test-RuntimeProbe.ps1` | Step 2: listener + Windows sign-in + group + AD + Origin check, on the lab machine. |
 | `Test-AppleLookup.ps1` | Step 2: the Apple lookup through the module, with the real config and key. Also the released-device test. |
 | `New-SampleCertificate.ps1` | Step 3: writes two sample certificates (typical, and worst case) with invented data. |
@@ -124,7 +125,9 @@ notepad C:\ProgramData\AppleCert\config.json
 
 In `config.json`: `ClientId`, `KeyId`, `PublicOrigin` as
 `https://<lab-machine>.<domain>:5000` (the full name, no trailing slash),
-`AllowedGroup` as `DOMAIN\GroupName`, and `SupportEmail` as the team mailbox
+`AllowedGroup` as `DOMAIN\GroupName`, `ManualAllowedGroup` as the group that
+may issue manual certificates (leave it out or blank to turn manual
+certificates off), and `SupportEmail` as the team mailbox
 shown at the bottom of the blue panel (optional: if it is missing or left as
 the placeholder, only "Product of Endpoint Management Team" shows). Leave
 `PrivateKeyPath` and `DataPath` as they are. Backslashes in JSON are doubled: `"DOMAIN\\AppleCert-Users"`.
@@ -239,6 +242,8 @@ Open each file in **Edge**, press **Print**, choose **Save as PDF**, and check:
 | `GET /applecert/` | Serial form, AppFilter's split page. Shows who you are signed in as. |
 | `GET /applecert/device?serial=X` | Apple's record, read-only. **Any certificates already issued for the serial, newest first, linked** — a warning, not a block. The form: wipe method, compliance standard (from `CertificateOptions.json`), wipe date (today, no future dates), asset tag, notes (500 max). |
 | `POST /applecert/certificate` | Origin must match `PublicOrigin` exactly (403 otherwise). Body over 16 KB refused (413). **Device fetched from Apple again**; nothing about the device is taken from the form. Every choice checked against the options file; a refusal shows the device page again with the problems listed and the entries kept. Then: next number, page stored, register row, **303** to the GET below — so a refresh or Back never issues a second certificate. |
+| `GET /applecert/manual?serial=X` | Manual entry, linked from "not found" for `ManualAllowedGroup` only (403 for anyone else). Asks Apple again first: found sends you to the device page (303), Apple unreachable refuses (503). Shows existing certificates for the serial, as the device page does. |
+| `POST /applecert/certificate/manual` | Same Origin, size and time limits as the POST above, plus `ManualAllowedGroup`. Apple asked again: found refuses (409, with a link to the device page), unreachable refuses (503). Device details and reason checked, then the wipe details, then issued as above with `DeviceSource` `Manual`. Logged as `ISSUED … MANUAL reason=…`. |
 | `GET /applecert/certificate?id=X` | The stored page, byte for byte. The ID is checked against `^AC-\d{4}-\d{6}\z` before any path is built. |
 | `GET /applecert/health` | `OK`. The only route without the group check. |
 
@@ -252,7 +257,11 @@ refusals are logged. Errors show a generic page; the detail goes to the log.
 - `register.csv` — one row per certificate: ID, time issued (ISO, with offset),
   serial, device type, model, asset tag, capacity, part number, wipe method,
   wipe date, standard, technician name, email, `DOMAIN\user`, SID, notes, and
-  the **SHA-256 of the stored page**. Values starting `= + - @` get a leading
+  the **SHA-256 of the stored page**, then `DeviceSource` (`Apple Business`
+  or `Manual`), `ManualReason` and `ManualReasonDetail`. A register written
+  before those three columns existed is rewritten once at startup with them
+  added (old rows marked `Apple Business`), keeping the previous file as
+  `register.csv.bak`; the log says `REGISTER UPDATED`. Values starting `= + - @` get a leading
   apostrophe so Excel does not run them; the app strips it on reading.
 - `AppleCertServer.log` — every request and refusal, and `ISSUED` lines with
   the ID, choices and hash. Rotates at 5 MB.

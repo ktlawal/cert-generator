@@ -4,6 +4,7 @@
   "PrivateKeyPath": "C:\\ProgramData\\AppleCert\\apple-business-key.pem",
   "PublicOrigin":   "https://<lab-machine>.<domain>:5000",
   "AllowedGroup":   "DOMAIN\\AppleCert-Users",
+  "ManualAllowedGroup": "DOMAIN\\AppleCert-Manual",
   "DataPath":       "C:\\ProgramData\\AppleCert",
   "SupportEmail":   "<team-mailbox>@<domain>"
 }

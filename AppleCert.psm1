@@ -38,6 +38,17 @@ $script:CertificateIdPattern = '^AC-\d{4}-\d{6}\z'
 $script:AssetTagPattern      = '^[A-Za-z0-9\-_/]{0,32}\z'
 $script:NotesMaxLength       = 500
 $script:WipeDateMaxAgeDays   = 180
+# Manual certificates: for a device Apple Business does not return (released
+# before it was certified, or never enrolled). The device details are typed
+# by the technician, so each field is held to a tight shape, and the
+# certificate says the details were entered by hand.
+$script:ManualDeviceTypes     = @('iPhone', 'iPad', 'Mac', 'Apple TV', 'Apple Watch', 'Apple Vision')
+$script:ManualReasons         = @('Released from Apple Business', 'Never enrolled in Apple Business', 'Other')
+$script:ManualNotice          = 'Device details entered manually'
+$script:ManualModelPattern    = '^[A-Za-z0-9 ()\-,./+&''"]{1,80}\z'
+$script:ManualCapacityPattern = '^[A-Za-z0-9 .]{0,16}\z'
+$script:ManualPartPattern     = '^[A-Za-z0-9/\-]{0,20}\z'
+$script:ManualDetailMaxLength = 200
 # Seconds to wait for Apple before giving up, so a hung connection cannot hold
 # the (single-threaded) server for the .NET default of 100 seconds.
 $script:AppleTimeoutSeconds  = 20
@@ -176,6 +187,9 @@ function Import-AppleCertConfig {
         # missing, still the placeholder, or not a plain address, so nothing
         # odd can reach a page or a mailto: link.
         SupportEmail   = ConvertTo-SupportEmail ([string](Get-DataProperty $cfg 'SupportEmail'))
+        # Optional: who may issue certificates with manually entered device
+        # details. Blank turns the manual path off for everyone.
+        ManualAllowedGroup = ([string](Get-DataProperty $cfg 'ManualAllowedGroup')).Trim()
     }
 }
 
@@ -596,6 +610,83 @@ function Test-CertificateInput {
     $errors
 }
 
+function Get-ManualOption {
+    # The fixed choices on the manual form: device types and reasons.
+    [pscustomobject]@{ DeviceTypes = $script:ManualDeviceTypes; Reasons = $script:ManualReasons }
+}
+
+function ConvertTo-SingleLine {
+    # Typed device details and the reason: one line, single spaces, no
+    # invisible characters.
+    param([string]$Text)
+    ((ConvertTo-CleanNotes $Text) -replace '\s+', ' ').Trim()
+}
+
+function Test-ManualDeviceInput {
+    <#
+        Checks the device details typed on the manual form. Returns a list of
+        plain-English problems; an empty list means they are acceptable.
+        -SerialConfirm is checked only when given: the server passes it, the
+        certificate builder (which never sees the form) does not.
+    #>
+    param(
+        [string]$Serial,
+        [string]$SerialConfirm,
+        [string]$DeviceType,
+        [string]$Model,
+        [string]$DeviceCapacity,
+        [string]$PartNumber,
+        [string]$Reason,
+        [string]$ReasonDetail
+    )
+
+    $errors = @()
+    if ($script:ManualReasons -cnotcontains $Reason) {
+        $errors += 'Choose a reason from the list.'
+    }
+    $detail = ConvertTo-SingleLine $ReasonDetail
+    if ($Reason -ceq 'Other' -and -not $detail) {
+        $errors += 'Explain the reason when it is Other.'
+    }
+    if ($detail.Length -gt $script:ManualDetailMaxLength) {
+        $errors += "The reason can be at most $($script:ManualDetailMaxLength) characters."
+    }
+    if (-not (Test-SerialNumber $Serial)) {
+        $errors += 'Serial number must be 1 to 32 letters and digits.'
+    } elseif ($PSBoundParameters.ContainsKey('SerialConfirm') -and
+              ([string]$SerialConfirm).Trim().ToUpperInvariant() -cne $Serial) {
+        $errors += 'The serial number typed again does not match.'
+    }
+    if ($script:ManualDeviceTypes -cnotcontains $DeviceType) {
+        $errors += 'Choose a device type from the list.'
+    }
+    if ((ConvertTo-SingleLine $Model) -cnotmatch $script:ManualModelPattern) {
+        $errors += 'Model is required: up to 80 letters, digits, spaces and ( ) - , . / + & '' ".'
+    }
+    if ((ConvertTo-SingleLine $DeviceCapacity) -cnotmatch $script:ManualCapacityPattern) {
+        $errors += 'Device capacity can be up to 16 letters, digits, spaces and dots, such as 256GB.'
+    }
+    if ((ConvertTo-SingleLine $PartNumber) -cnotmatch $script:ManualPartPattern) {
+        $errors += 'Part number can be up to 20 letters, digits, hyphens and slashes, such as MLY33LL/A.'
+    }
+    $errors
+}
+
+function New-ManualDevice {
+    <#
+        The typed device details in the shape of Apple's record, so the
+        certificate is built the same way either way.
+    #>
+    param([string]$Serial, [string]$DeviceType, [string]$Model, [string]$DeviceCapacity, [string]$PartNumber)
+    [pscustomobject]@{
+        productFamily  = [string]$DeviceType
+        deviceModel    = ConvertTo-SingleLine $Model
+        serialNumber   = ([string]$Serial).Trim().ToUpperInvariant()
+        deviceCapacity = ConvertTo-SingleLine $DeviceCapacity
+        partNumber     = (ConvertTo-SingleLine $PartNumber).ToUpperInvariant()
+    }
+}
+
 function ConvertTo-CleanNotes {
     # Free text, kept to one paragraph per line: control characters other than
     # a newline go, Windows line endings become plain newlines.
@@ -615,7 +706,13 @@ function New-CertificateData {
         values the certificate shows. Device details come only from $Device,
         which the server re-fetched from Apple - never from the submitted form.
 
-        Throws if the technician's input fails Test-CertificateInput.
+        The one exception is -DeviceSource Manual: Apple Business has no record
+        of the device, $Device holds what the technician typed (New-ManualDevice),
+        and the Notes on the certificate start with "Device details entered
+        manually" on a line of its own.
+
+        Throws if the technician's input fails Test-CertificateInput (or, for
+        a manual certificate, Test-ManualDeviceInput).
     #>
     param(
         [Parameter(Mandatory)]$Device,
@@ -629,10 +726,27 @@ function New-CertificateData {
         [string]$WipeDate,
         [string]$Notes,
         [string]$AssetTag,
-        [DateTimeOffset]$IssuedAt = [DateTimeOffset]::Now
+        [DateTimeOffset]$IssuedAt = [DateTimeOffset]::Now,
+        [ValidateSet('Apple Business', 'Manual')]
+        [string]$DeviceSource = 'Apple Business',
+        [string]$ManualReason,
+        [string]$ManualReasonDetail
     )
 
     if (-not (Test-CertificateId $CertificateId)) { throw "Not a certificate ID: $CertificateId" }
+
+    $isManual = $DeviceSource -ceq 'Manual'
+    if ($isManual) {
+        $manualProblems = @(Test-ManualDeviceInput -Serial ([string](Get-DataProperty $Device 'serialNumber')) `
+                              -DeviceType ([string](Get-DataProperty $Device 'productFamily')) `
+                              -Model ([string](Get-DataProperty $Device 'deviceModel')) `
+                              -DeviceCapacity ([string](Get-DataProperty $Device 'deviceCapacity')) `
+                              -PartNumber ([string](Get-DataProperty $Device 'partNumber')) `
+                              -Reason $ManualReason -ReasonDetail $ManualReasonDetail)
+        if ($manualProblems.Count -gt 0) { throw ($manualProblems -join ' ') }
+    } else {
+        $ManualReason = ''; $ManualReasonDetail = ''
+    }
 
     $AssetTag = ([string]$AssetTag).Trim()
     $Notes    = ConvertTo-CleanNotes $Notes
@@ -643,6 +757,14 @@ function New-CertificateData {
 
     $wipe = [datetime]::ParseExact($WipeDate, 'yyyy-MM-dd', [Globalization.CultureInfo]::InvariantCulture)
     $inv  = [Globalization.CultureInfo]::InvariantCulture
+
+    # What prints under Notes. A manual certificate says so first, on its own
+    # line, with whatever the technician wrote below it.
+    $printedNotes = $Notes
+    if ($isManual) {
+        $printedNotes = $script:ManualNotice
+        if ($Notes) { $printedNotes += "`n" + $Notes }
+    }
 
     [pscustomobject][ordered]@{
         DeviceType         = [string](Get-DataProperty $Device 'productFamily')
@@ -656,7 +778,7 @@ function New-CertificateData {
         ComplianceStandard = $ComplianceStandard
         Technician         = $TechnicianName
         TechnicianEmail    = [string]$TechnicianEmail
-        Notes              = $Notes
+        Notes              = $printedNotes
         CertificateID      = $CertificateId
         DateIssued         = $IssuedAt.ToString('d MMMM yyyy, HH:mm', $inv) + ' (UTC' + $IssuedAt.ToString('zzz', $inv) + ')'
 
@@ -664,6 +786,10 @@ function New-CertificateData {
         TechnicianAccount  = $TechnicianAccount
         WipeDateIso        = $wipe.ToString('yyyy-MM-dd', $inv)
         IssuedAtIso        = $IssuedAt.ToString('o', $inv)
+        EnteredNotes       = $Notes
+        DeviceSource       = $DeviceSource
+        ManualReason       = [string]$ManualReason
+        ManualReasonDetail = ConvertTo-SingleLine $ManualReasonDetail
     }
 }
 
@@ -959,7 +1085,7 @@ $script:RegisterColumns = @(
     'CertificateID', 'IssuedAt', 'SerialNumber', 'DeviceType', 'Model', 'AssetTag',
     'DeviceCapacity', 'PartNumber', 'WipeMethod', 'WipeDate', 'ComplianceStandard',
     'TechnicianName', 'TechnicianEmail', 'TechnicianAccount', 'TechnicianSid',
-    'Notes', 'Sha256'
+    'Notes', 'Sha256', 'DeviceSource', 'ManualReason', 'ManualReasonDetail'
 )
 
 function ConvertTo-CsvSafeText {
@@ -989,6 +1115,35 @@ function Get-CertificateFolder {
 function Get-RegisterPath {
     param([Parameter(Mandatory)][string]$DataPath)
     Join-Path $DataPath 'register.csv'
+}
+
+function Update-RegisterLayout {
+    <#
+        Brings a register written before a column was added up to the current
+        columns, once, so rows can still be appended to it. Existing values
+        are copied as they are in the file (already CSV-safe); certificates
+        from before the manual path get DeviceSource "Apple Business". The old
+        file is kept beside it as register.csv.bak. Does nothing when the
+        register is missing or already current.
+    #>
+    param([Parameter(Mandatory)][string]$DataPath)
+    $path = Get-RegisterPath -DataPath $DataPath
+    if (-not (Test-Path -LiteralPath $path)) { return $false }
+    $header = [string](Get-Content -LiteralPath $path -TotalCount 1 -Encoding UTF8)
+    $missing = @($script:RegisterColumns | Where-Object { -not $header.Contains("""$_""") })
+    if ($missing.Count -eq 0) { return $false }
+
+    $rows = @(Import-Csv -LiteralPath $path -Encoding UTF8 | ForEach-Object {
+        $r = $_
+        $o = [ordered]@{}
+        foreach ($c in $script:RegisterColumns) { $o[$c] = [string](Get-DataProperty $r $c) }
+        if (-not $o['DeviceSource']) { $o['DeviceSource'] = 'Apple Business' }
+        [pscustomobject]$o
+    })
+    $temp = "$path.new"
+    $rows | Export-Csv -LiteralPath $temp -NoTypeInformation -Encoding UTF8 -ErrorAction Stop
+    [IO.File]::Replace($temp, $path, "$path.bak")
+    $true
 }
 
 function Get-CertificateRegister {
@@ -1066,8 +1221,15 @@ function New-IssuedCertificate {
         [string]$Notes,
         [string]$AssetTag,
         [string]$HomeLink,
-        [DateTimeOffset]$IssuedAt = [DateTimeOffset]::Now
+        [DateTimeOffset]$IssuedAt = [DateTimeOffset]::Now,
+        [ValidateSet('Apple Business', 'Manual')]
+        [string]$DeviceSource = 'Apple Business',
+        [string]$ManualReason,
+        [string]$ManualReasonDetail
     )
+
+    # A register from before a column was added cannot take the new row.
+    [void](Update-RegisterLayout -DataPath $DataPath)
 
     $folder = Get-CertificateFolder -DataPath $DataPath
     if (-not (Test-Path -LiteralPath $folder)) { New-Item -ItemType Directory -Path $folder -Force | Out-Null }
@@ -1081,7 +1243,8 @@ function New-IssuedCertificate {
                     -TechnicianName $Technician.DisplayName -TechnicianEmail $Technician.Email `
                     -TechnicianAccount $Technician.Account -WipeMethod $WipeMethod `
                     -ComplianceStandard $ComplianceStandard -WipeDate $WipeDate -Notes $Notes `
-                    -AssetTag $AssetTag -IssuedAt $IssuedAt
+                    -AssetTag $AssetTag -IssuedAt $IssuedAt -DeviceSource $DeviceSource `
+                    -ManualReason $ManualReason -ManualReasonDetail $ManualReasonDetail
         $bytes = $utf8.GetBytes((New-CertificateHtml -Data $data -HomeLink $HomeLink))
         $path  = Join-Path $folder "$id.html"
         try {
@@ -1119,8 +1282,11 @@ function New-IssuedCertificate {
         TechnicianEmail    = $data.TechnicianEmail
         TechnicianAccount  = $data.TechnicianAccount
         TechnicianSid      = [string]$Technician.Sid
-        Notes              = $data.Notes
+        Notes              = $data.EnteredNotes
         Sha256             = $hash
+        DeviceSource       = $data.DeviceSource
+        ManualReason       = $data.ManualReason
+        ManualReasonDetail = $data.ManualReasonDetail
     }
     $safe = [ordered]@{}
     foreach ($k in $row.Keys) { $safe[$k] = ConvertTo-CsvSafeText ([string]$row[$k]) }
@@ -1161,9 +1327,10 @@ Export-ModuleMember -Function @(
     'Get-AppleAccessToken', 'Clear-AppleAccessToken', 'Get-AppleTokenState',
     'Get-AppleBusinessDevice',
     'Test-CertificateInput', 'New-CertificateData', 'New-CertificateHtml',
+    'Get-ManualOption', 'Test-ManualDeviceInput', 'New-ManualDevice',
     'Resolve-AllowedGroupSid', 'Test-AllowedUser', 'Get-TechnicianIdentity',
     'Read-LimitedBody', 'ConvertTo-CleanNotes',
     'ConvertTo-CsvSafeText', 'ConvertFrom-CsvSafeText',
-    'Get-CertificateRegister', 'Get-CertificateHistory', 'New-CertificateId',
+    'Get-CertificateRegister', 'Get-CertificateHistory', 'New-CertificateId', 'Update-RegisterLayout',
     'New-IssuedCertificate', 'Get-IssuedCertificate'
 )

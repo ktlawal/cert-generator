@@ -173,6 +173,11 @@ try {
     Assert-That 'extra header refused'      (Get-Support ',"SupportEmail":"a@example.org?bcc=x@evil.example"') ''
     Assert-That 'markup refused'            (Get-Support ',"SupportEmail":"a@example.org\"><b>"')       ''
     Assert-That 'two addresses refused'     (Get-Support ',"SupportEmail":"a@example.org,b@example.org"') ''
+    # ManualAllowedGroup is optional too: blank turns the manual path off.
+    Get-Support ',"ManualAllowedGroup":" DOMAIN\\AppleCert-Manual "' | Out-Null
+    Assert-That 'manual group read, trimmed' (Import-AppleCertConfig -Path $cfgPath).ManualAllowedGroup 'DOMAIN\AppleCert-Manual'
+    Get-Support '' | Out-Null
+    Assert-That 'manual group missing is blank' (Import-AppleCertConfig -Path $cfgPath).ManualAllowedGroup ''
 }
 finally { Remove-Item -LiteralPath $cfgDir -Recurse -Force -ErrorAction SilentlyContinue }
 
@@ -387,6 +392,106 @@ try {
     $badIssue = $issue.Clone(); $badIssue.WipeMethod = 'Hammer'
     Assert-Throws 'bad input refused'         { New-IssuedCertificate @badIssue -IssuedAt $issued } '*wipe method*'
     Assert-That 'nothing stored on refusal'   @(Get-ChildItem -LiteralPath (Join-Path $reg 'Certificates')).Count $before
+}
+finally { Remove-Item -LiteralPath $reg -Recurse -Force -ErrorAction SilentlyContinue }
+
+
+Write-Host "`nManual certificates: device details" -ForegroundColor Cyan
+function Get-ManualProblem {
+    param([hashtable]$Override = @{})
+    $p = @{ Serial = 'C02TEST0SN09'; SerialConfirm = 'c02test0sn09 '; DeviceType = 'Mac'
+            Model = 'MacBook Air 13-inch (M2, 2022)'; DeviceCapacity = '256GB'; PartNumber = 'MLY33LL/A'
+            Reason = 'Released from Apple Business'; ReasonDetail = '' }
+    foreach ($k in $Override.Keys) { $p[$k] = $Override[$k] }
+    @(Test-ManualDeviceInput @p)
+}
+Assert-That 'valid manual input'          (Get-ManualProblem).Count 0
+Assert-That 'serial confirm must match'   (Get-ManualProblem @{ SerialConfirm = 'C02TEST0SN08' }).Count 1
+Assert-That 'serial confirm missing'      (Get-ManualProblem @{ SerialConfirm = '' }).Count 1
+Assert-That 'bad serial'                  (Get-ManualProblem @{ Serial = 'C02/..' }).Count 1
+Assert-That 'device type from the list'   (Get-ManualProblem @{ DeviceType = 'Laptop' }).Count 1
+Assert-That 'device type exact case'      (Get-ManualProblem @{ DeviceType = 'mac' }).Count 1
+Assert-That 'model required'              (Get-ManualProblem @{ Model = '  ' }).Count 1
+Assert-That 'model with markup'           (Get-ManualProblem @{ Model = 'Mac<script>' }).Count 1
+Assert-That 'model too long'              (Get-ManualProblem @{ Model = ('M' * 81) }).Count 1
+Assert-That 'model Apple-style punctuation' (Get-ManualProblem @{ Model = 'iPad Pro 12.9-inch (6th generation) Wi-Fi + Cellular' }).Count 0
+Assert-That 'capacity optional'           (Get-ManualProblem @{ DeviceCapacity = '' }).Count 0
+Assert-That 'capacity with markup'        (Get-ManualProblem @{ DeviceCapacity = '<b>' }).Count 1
+Assert-That 'part number optional'        (Get-ManualProblem @{ PartNumber = '' }).Count 0
+Assert-That 'part number with markup'     (Get-ManualProblem @{ PartNumber = 'MLY"33' }).Count 1
+Assert-That 'reason from the list'        (Get-ManualProblem @{ Reason = 'Lost it' }).Count 1
+Assert-That 'reason missing'              (Get-ManualProblem @{ Reason = '' }).Count 1
+Assert-That 'Other needs an explanation'  (Get-ManualProblem @{ Reason = 'Other' }).Count 1
+Assert-That 'Other with an explanation'   (Get-ManualProblem @{ Reason = 'Other'; ReasonDetail = 'Bought from a reseller' }).Count 0
+Assert-That 'explanation too long'        (Get-ManualProblem @{ ReasonDetail = ('x' * 201) }).Count 1
+$md = New-ManualDevice -Serial ' c02test0sn09 ' -DeviceType 'Mac' -Model "  MacBook   Air`r`n13-inch " `
+          -DeviceCapacity '256GB' -PartNumber 'mly33ll/a'
+Assert-That 'manual serial upper-cased'   $md.serialNumber 'C02TEST0SN09'
+Assert-That 'manual model on one line'    $md.deviceModel  'MacBook Air 13-inch'
+Assert-That 'manual part upper-cased'     $md.partNumber   'MLY33LL/A'
+
+
+Write-Host "`nManual certificates: certificate and register" -ForegroundColor Cyan
+$manualBase = @{
+    Device = $md; Options = $options; CertificateId = 'AC-2026-000050'
+    TechnicianName = 'Alex Example'; TechnicianEmail = 'alex@example.org'; TechnicianAccount = 'DOMAIN\aexample'
+    WipeMethod = 'Erase All Content and Settings'; ComplianceStandard = 'Built-in Erase (Factory Reset)'
+    WipeDate = '2026-10-01'; Notes = 'Erased by <J. Smith>'; AssetTag = ''; IssuedAt = $issued
+    DeviceSource = 'Manual'; ManualReason = 'Released from Apple Business'
+}
+$mData = New-CertificateData @manualBase
+Assert-That 'manual notes: notice, then notes'  $mData.Notes "Device details entered manually`nErased by <J. Smith>"
+Assert-That 'manual entered notes kept apart'   $mData.EnteredNotes 'Erased by <J. Smith>'
+Assert-That 'manual device source'              $mData.DeviceSource 'Manual'
+$noNotes = $manualBase.Clone(); $noNotes.Notes = ''
+Assert-That 'manual, no notes: notice alone'    (New-CertificateData @noNotes).Notes 'Device details entered manually'
+$mHtml = New-CertificateHtml -Data $mData
+Assert-That 'manual notice printed, escaped'    ($mHtml -match '<td class="notes">Device details entered manually\nErased by &lt;J\. Smith&gt;</td>') 'True'
+Assert-That 'Apple certificate has no notice'   ((New-CertificateHtml -Data $data) -match 'entered manually') 'False'
+Assert-That 'Apple certificate source'          $data.DeviceSource 'Apple Business'
+$badManual = $manualBase.Clone(); $badManual.ManualReason = ''
+Assert-Throws 'manual without a reason refused' { New-CertificateData @badManual } '*reason*'
+$badManual = $manualBase.Clone(); $badManual.Device = New-ManualDevice -Serial 'C02TEST0SN09' -DeviceType 'Toaster' -Model 'X'
+Assert-Throws 'manual bad device type refused'  { New-CertificateData @badManual } '*device type*'
+$badManual = $manualBase.Clone(); $badManual.DeviceSource = 'Typed'
+Assert-Throws 'unknown device source refused'   { New-CertificateData @badManual } '*DeviceSource*'
+
+$reg = Join-Path ([IO.Path]::GetTempPath()) ("applecert-man-" + [Guid]::NewGuid().ToString('n'))
+New-Item -ItemType Directory -Path $reg | Out-Null
+try {
+    $tech = [pscustomobject]@{ DisplayName = 'Alex Example'; Email = 'alex@example.org'
+                               Account = 'DOMAIN\aexample'; Sid = 'S-1-5-21-1-2-3-1001' }
+    # A register written before the manual columns: one row, old header.
+    $oldHeader = '"CertificateID","IssuedAt","SerialNumber","DeviceType","Model","AssetTag","DeviceCapacity","PartNumber","WipeMethod","WipeDate","ComplianceStandard","TechnicianName","TechnicianEmail","TechnicianAccount","TechnicianSid","Notes","Sha256"'
+    $oldRow    = '"AC-2026-000001","2026-10-01T09:00:00.0000000-05:00","OLD1","iPad","iPad","","64GB","X","MDM Remote Wipe","2026-10-01","Built-in Erase (Factory Reset)","Alex","","DOMAIN\a","S-1","''=1+1","abc"'
+    Set-Content -LiteralPath (Join-Path $reg 'register.csv') -Value @($oldHeader, $oldRow) -Encoding UTF8
+    Assert-That 'old register updated'        (Update-RegisterLayout -DataPath $reg) 'True'
+    Assert-That 'second update does nothing'  (Update-RegisterLayout -DataPath $reg) 'False'
+    Assert-That 'backup kept'                 (Test-Path -LiteralPath (Join-Path $reg 'register.csv.bak')) 'True'
+    $rows = @(Get-CertificateRegister -DataPath $reg)
+    Assert-That 'old row kept'                $rows[0].CertificateID 'AC-2026-000001'
+    Assert-That 'old row marked Apple'        $rows[0].DeviceSource 'Apple Business'
+    Assert-That 'old row escaping kept'       $rows[0].Notes '=1+1'
+
+    $mIssue = @{
+        DataPath = $reg; Device = $md; Options = $options; Technician = $tech
+        WipeMethod = 'MDM Remote Wipe'; ComplianceStandard = 'Built-in Erase (Factory Reset)'
+        WipeDate = '2026-10-01'; Notes = 'Erased by J. Smith'; AssetTag = ''; HomeLink = '/applecert/'
+        DeviceSource = 'Manual'; ManualReason = 'Other'; ManualReasonDetail = "=Bought`nfrom a reseller"
+    }
+    $m1 = New-IssuedCertificate @mIssue -IssuedAt $issued
+    Assert-That 'manual takes the next number' $m1.CertificateID 'AC-2026-000002'
+    $rows = @(Get-CertificateRegister -DataPath $reg)
+    Assert-That 'manual row added'            $rows.Count 2
+    Assert-That 'manual row source'           $rows[1].DeviceSource 'Manual'
+    Assert-That 'manual row reason'           $rows[1].ManualReason 'Other'
+    Assert-That 'manual detail one line'      $rows[1].ManualReasonDetail '=Bought from a reseller'
+    Assert-That 'register keeps entered notes' $rows[1].Notes 'Erased by J. Smith'
+    $raw = Get-Content -LiteralPath (Join-Path $reg 'register.csv') -Raw
+    Assert-That 'manual detail formula escaped' ($raw.Contains('"''=Bought from a reseller"')) 'True'
+    $mPage = [Text.Encoding]::UTF8.GetString((Get-IssuedCertificate -DataPath $reg -Id $m1.CertificateID))
+    Assert-That 'stored page has the notice'  ($mPage -match 'Device details entered manually\nErased by J\. Smith') 'True'
+    Assert-That 'manual in history'           @(Get-CertificateHistory -DataPath $reg -Serial 'C02TEST0SN09').Count 1
 }
 finally { Remove-Item -LiteralPath $reg -Recurse -Force -ErrorAction SilentlyContinue }
 

@@ -15,10 +15,16 @@
                                              from Apple, validate, issue,
                                              record, then 303 to the GET below
         GET  /applecert/certificate?id=X     an issued certificate, as stored
+        GET  /applecert/manual?serial=X      manual entry, for a serial Apple
+                                             Business does not return
+        POST /applecert/certificate/manual   check Origin, confirm Apple still
+                                             does not return it, validate,
+                                             issue, record, then 303
         GET  /applecert/health               OK
 
     Windows Integrated sign-in, HTTPS only, and every route but /health
-    checked against AllowedGroup from the config. The Apple key, client ID and
+    checked against AllowedGroup from the config. The two manual routes also
+    need ManualAllowedGroup, and are off when it is not set. The Apple key, client ID and
     key ID live in the config outside the repo and never reach a page or the
     log.
 
@@ -170,6 +176,12 @@ $PageCss = @'
   .field textarea { min-height: 84px; resize: vertical; }
   .field .hint { font-size: 12px; color: #98a2b3; margin-top: 5px; }
   .row { display: grid; grid-template-columns: 1fr 1fr; gap: 0 14px; }
+  .optional { text-transform: none; letter-spacing: 0; font-weight: 400; }
+  .group { margin: 26px 0 14px; padding-top: 18px; border-top: 1px solid #eaecf0;
+           font-size: 14px; font-weight: 600; color: #344054; }
+  .group:first-child { margin-top: 0; padding-top: 0; border-top: 0; }
+  .device .explain { padding: 14px 20px 16px; font-size: 13.5px; line-height: 1.55; color: #475467; margin: 0; }
+  .err a.manual { display: inline-block; margin-top: 8px; color: #b3261e; font-weight: 600; }
 
   .foot { margin-top: 26px; font-size: 12.5px; color: #98a2b3; line-height: 1.5; }
   .foot a { color: #667085; }
@@ -251,16 +263,32 @@ function Format-SignedIn {
 
 # Shown under "no device with that serial". Apple Business does not reliably
 # keep released devices visible to the API, so certificates are issued before
-# a device is released.
-$NotFoundHint = 'If this device has been released from Apple Business, it cannot be certified here. Issue certificates before releasing devices.'
+# a device is released. Someone in ManualAllowedGroup gets a link to the
+# manual form as well; everyone else is told who can help.
+$NotFoundHint = 'Check the serial. If the device was released from Apple Business or never enrolled, a certificate with manually entered details can be issued by someone allowed to. Issue certificates before releasing devices.'
+$NotFoundHintManual = 'Check the serial. If the device was released from Apple Business or never enrolled, you can issue a certificate with the details entered manually. Issue certificates before releasing devices.'
+
+function Get-NotFoundPage {
+    # The serial form with Apple's "not found", and the manual link for those
+    # allowed to use it.
+    param([string]$User, [string]$Serial, [string]$Message, [bool]$CanManual)
+    if ($CanManual) {
+        return New-FormPage -User $User -Serial $Serial -Error $Message -Hint $NotFoundHintManual -ManualSerial $Serial
+    }
+    New-FormPage -User $User -Serial $Serial -Error $Message -Hint $NotFoundHint
+}
 
 function New-FormPage {
-    param([string]$Error, [string]$Serial, [string]$User, [string]$Hint)
+    param([string]$Error, [string]$Serial, [string]$User, [string]$Hint, [string]$ManualSerial)
 
     $errHtml = ''
     if ($Error) {
         $hintHtml = ''
         if ($Hint) { $hintHtml = "<span class=`"why`">$(ConvertTo-HtmlText $Hint)</span>" }
+        if ($ManualSerial -and (Test-SerialNumber $ManualSerial)) {
+            $href = ConvertTo-HtmlText ("${BasePath}manual?serial=$ManualSerial")
+            $hintHtml += "<a class=`"manual`" href=`"$href`">Issue a certificate with manually entered details &rarr;</a>"
+        }
         $errHtml = "      <p class=`"err`">$(ConvertTo-HtmlText $Error)$hintHtml</p>`n"
     }
 
@@ -278,10 +306,14 @@ $errHtml      <form method="get" action="${BasePath}device">
 }
 
 function New-ErrorPage {
-    param([string]$Title, [string]$Detail)
+    param([string]$Title, [string]$Detail, [string]$LinkHref, [string]$LinkText)
+    $link = ''
+    if ($LinkHref -and $LinkText) {
+        $link = "<a class=`"manual`" href=`"$(ConvertTo-HtmlText $LinkHref)`">$(ConvertTo-HtmlText $LinkText) &rarr;</a>"
+    }
     $body = @"
       <h1>$(ConvertTo-HtmlText $Title)</h1>
-      <p class="err">$(ConvertTo-HtmlText $Detail)</p>
+      <p class="err">$(ConvertTo-HtmlText $Detail)$link</p>
       <form method="get" action="$BasePath"><button type="submit">Back</button></form>
 "@
     New-SplitPage -Title $Title -Body $body
@@ -357,47 +389,9 @@ function New-DevicePage {
         "        <div><span>$($f[0])</span><b>$v</b></div>"
     }
 
-    # Already certified? Say so plainly, with links, but do not block: a device
-    # can legitimately be wiped and certified again.
-    $historyHtml = '      <p class="muted">No certificates have been issued for this device yet.</p>'
-    $hist = @($History)
-    if ($hist.Count -gt 0) {
-        $items = foreach ($h in $hist) {
-            $id = [string]$h.CertificateID
-            $link = ConvertTo-HtmlText ("${BasePath}certificate?id=$id")
-            "          <li><a href=`"$link`">$(ConvertTo-HtmlText $id)</a> &mdash; issued $(ConvertTo-HtmlText (Format-IsoDate $h.IssuedAt)) by $(ConvertTo-HtmlText $h.TechnicianName): $(ConvertTo-HtmlText $h.WipeMethod), wiped $(ConvertTo-HtmlText (Format-IsoDate $h.WipeDate))</li>"
-        }
-        $noun = 'certificate'
-        if ($hist.Count -ne 1) { $noun = 'certificates' }
-        $historyHtml = @"
-      <div class="warn"><b>This device already has $($hist.Count) $noun.</b> Check you are not issuing a duplicate. Issue a new one only if the device was wiped again.
-        <ul>
-$($items -join "`n")
-        </ul>
-      </div>
-"@
-    }
-
-    $errHtml = ''
-    $probs = @($Problems)
-    if ($probs.Count -gt 0) {
-        $li = ($probs | ForEach-Object { "<li>$(ConvertTo-HtmlText $_)</li>" }) -join ''
-        $errHtml = "      <div class=`"err`">The certificate was not issued:<ul>$li</ul></div>`n"
-    }
-
-    function Select-Options([object[]]$Choices, [string]$Selected) {
-        ($Choices | ForEach-Object {
-            $sel = ''
-            if ([string]$_ -ceq $Selected) { $sel = ' selected' }
-            "<option value=`"$(ConvertTo-HtmlText $_)`"$sel>$(ConvertTo-HtmlText $_)</option>"
-        }) -join ''
-    }
-
-    $today    = (Get-Date).ToString('yyyy-MM-dd')
-    $earliest = (Get-Date).AddDays(-180).ToString('yyyy-MM-dd')
-    $wm = $Values['WipeMethod'];         if (-not $wm) { $wm = $options.WipeMethod.Default }
-    $cs = $Values['ComplianceStandard']; if (-not $cs) { $cs = $options.ComplianceStandard.Default }
-    $wd = $Values['WipeDate'];           if (-not $wd) { $wd = $today }
+    $historyHtml = Format-History -History $History
+    $errHtml = Format-Problems -Problems $Problems
+    $wipeFields = Format-WipeFields -Values $Values
 
     $title = $model
     if (-not $title) { $title = 'Device' }
@@ -415,6 +409,73 @@ $($factRows -join "`n")
 $historyHtml
 $errHtml      <form method="post" action="${BasePath}certificate">
         <input type="hidden" name="serial" value="$(ConvertTo-HtmlText $serial)" />
+$wipeFields
+        <button type="submit">Generate certificate</button>
+      </form>
+      <p class="foot"><a href="$BasePath">&larr; look up another device</a></p>
+"@
+    New-SplitPage -Title "$serial - Apple Device Erasure Certificate" -Body $body -Wide -NoPanel
+}
+
+function Format-History {
+    # Already certified? Say so plainly, with links, but do not block: a device
+    # can legitimately be wiped and certified again.
+    param([object[]]$History = @())
+    $historyHtml = '      <p class="muted">No certificates have been issued for this device yet.</p>'
+    $hist = @($History)
+    if ($hist.Count -gt 0) {
+        $items = foreach ($h in $hist) {
+            $id = [string]$h.CertificateID
+            $link = ConvertTo-HtmlText ("${BasePath}certificate?id=$id")
+            $how = ''
+            if ($h.DeviceSource -ceq 'Manual') { $how = ' (details entered manually)' }
+            "          <li><a href=`"$link`">$(ConvertTo-HtmlText $id)</a>$how &mdash; issued $(ConvertTo-HtmlText (Format-IsoDate $h.IssuedAt)) by $(ConvertTo-HtmlText $h.TechnicianName): $(ConvertTo-HtmlText $h.WipeMethod), wiped $(ConvertTo-HtmlText (Format-IsoDate $h.WipeDate))</li>"
+        }
+        $noun = 'certificate'
+        if ($hist.Count -ne 1) { $noun = 'certificates' }
+        $historyHtml = @"
+      <div class="warn"><b>This device already has $($hist.Count) $noun.</b> Check you are not issuing a duplicate. Issue a new one only if the device was wiped again.
+        <ul>
+$($items -join "`n")
+        </ul>
+      </div>
+"@
+    }
+    $historyHtml
+}
+
+function Format-Problems {
+    param([string[]]$Problems = @())
+    $probs = @($Problems)
+    if ($probs.Count -eq 0) { return '' }
+    $li = ($probs | ForEach-Object { "<li>$(ConvertTo-HtmlText $_)</li>" }) -join ''
+    "      <div class=`"err`">The certificate was not issued:<ul>$li</ul></div>`n"
+}
+
+function Select-Options {
+    # <option>s for a dropdown. -Prompt adds a first, empty choice, so a
+    # required field has to be chosen rather than left on its first value.
+    param([object[]]$Choices, [string]$Selected, [string]$Prompt)
+    $out = @()
+    if ($Prompt) { $out += "<option value=`"`">$(ConvertTo-HtmlText $Prompt)</option>" }
+    $out += $Choices | ForEach-Object {
+        $sel = ''
+        if ([string]$_ -ceq $Selected) { $sel = ' selected' }
+        "<option value=`"$(ConvertTo-HtmlText $_)`"$sel>$(ConvertTo-HtmlText $_)</option>"
+    }
+    $out -join ''
+}
+
+function Format-WipeFields {
+    # The technician's wipe details: the same fields on both forms.
+    param([hashtable]$Values = @{}, [string]$NotesHint = 'Up to 500 characters. Printed on the certificate.')
+    $today    = (Get-Date).ToString('yyyy-MM-dd')
+    $earliest = (Get-Date).AddDays(-180).ToString('yyyy-MM-dd')
+    $wm = $Values['WipeMethod'];         if (-not $wm) { $wm = $options.WipeMethod.Default }
+    $cs = $Values['ComplianceStandard']; if (-not $cs) { $cs = $options.ComplianceStandard.Default }
+    $wd = $Values['WipeDate'];           if (-not $wd) { $wd = $today }
+
+    @"
         <div class="field">
           <label for="wipeMethod">Wipe method</label>
           <select id="wipeMethod" name="wipeMethod">$(Select-Options $options.WipeMethod.Options $wm)</select>
@@ -429,20 +490,93 @@ $errHtml      <form method="post" action="${BasePath}certificate">
             <input type="date" id="wipeDate" name="wipeDate" required min="$earliest" max="$today" value="$(ConvertTo-HtmlText $wd)" />
           </div>
           <div class="field">
-            <label for="assetTag">Asset tag <span style="text-transform:none;letter-spacing:0;font-weight:400">(optional)</span></label>
+            <label for="assetTag">Asset tag <span class="optional">(optional)</span></label>
             <input type="text" id="assetTag" name="assetTag" maxlength="32" autocomplete="off" spellcheck="false" value="$(ConvertTo-HtmlText $Values['AssetTag'])" />
           </div>
         </div>
         <div class="field">
-          <label for="notes">Notes <span style="text-transform:none;letter-spacing:0;font-weight:400">(optional)</span></label>
+          <label for="notes">Notes <span class="optional">(optional)</span></label>
           <textarea id="notes" name="notes" maxlength="500">$(ConvertTo-HtmlText $Values['Notes'])</textarea>
-          <div class="hint">Up to 500 characters. Printed on the certificate.</div>
+          <div class="hint">$(ConvertTo-HtmlText $NotesHint)</div>
         </div>
-        <button type="submit">Generate certificate</button>
+"@
+}
+
+function New-ManualPage {
+    <#
+        Manual entry, for a serial Apple Business does not return. Reached
+        only from "not found", and only by ManualAllowedGroup. The technician
+        types the serial again, the device details and a reason; the wipe
+        fields are the same as on the device page.
+    #>
+    param(
+        [Parameter(Mandatory)][string]$Serial,
+        [object[]]$History = @(),
+        [string[]]$Problems = @(),
+        [hashtable]$Values = @{}
+    )
+    $manual = Get-ManualOption
+    $historyHtml = Format-History -History $History
+    $errHtml = Format-Problems -Problems $Problems
+    $wipeFields = Format-WipeFields -Values $Values `
+                      -NotesHint 'Up to 500 characters. Printed on the certificate under "Device details entered manually".'
+    $s = ConvertTo-HtmlText $Serial
+
+    $body = @"
+      <div class="device">
+        <div class="dhead">
+          <div><h1>Manual certificate</h1><div class="sub">Serial $s &middot; not found in Apple Business</div></div>
+          <span class="badge note">&#9679; Manual entry</span>
+        </div>
+        <p class="explain">Apple Business has no record of this serial, so the device details below are typed in, not looked up. Copy them from the device itself or its packaging. The certificate will say <b>Device details entered manually</b>.</p>
+      </div>
+$historyHtml
+$errHtml      <form method="post" action="${BasePath}certificate/manual">
+        <input type="hidden" name="serial" value="$s" />
+        <div class="group">Why it is entered manually</div>
+        <div class="row">
+          <div class="field">
+            <label for="reason">Reason</label>
+            <select id="reason" name="reason" required>$(Select-Options $manual.Reasons $Values['Reason'] -Prompt 'Choose a reason')</select>
+          </div>
+          <div class="field">
+            <label for="reasonDetail">Explanation <span class="optional">(required for Other)</span></label>
+            <input type="text" id="reasonDetail" name="reasonDetail" maxlength="200" autocomplete="off" value="$(ConvertTo-HtmlText $Values['ReasonDetail'])" />
+          </div>
+        </div>
+        <div class="group">Device information</div>
+        <div class="row">
+          <div class="field">
+            <label for="serialConfirm">Serial number, again</label>
+            <input type="text" id="serialConfirm" name="serialConfirm" required maxlength="32" autocomplete="off" spellcheck="false" value="$(ConvertTo-HtmlText $Values['SerialConfirm'])" />
+            <div class="hint">Type it again from the device. It must match $s.</div>
+          </div>
+          <div class="field">
+            <label for="deviceType">Device type</label>
+            <select id="deviceType" name="deviceType" required>$(Select-Options $manual.DeviceTypes $Values['DeviceType'] -Prompt 'Choose a type')</select>
+          </div>
+        </div>
+        <div class="field">
+          <label for="model">Model</label>
+          <input type="text" id="model" name="model" required maxlength="80" autocomplete="off" placeholder="MacBook Air 13-inch (M2, 2022)" value="$(ConvertTo-HtmlText $Values['Model'])" />
+        </div>
+        <div class="row">
+          <div class="field">
+            <label for="deviceCapacity">Device capacity <span class="optional">(optional)</span></label>
+            <input type="text" id="deviceCapacity" name="deviceCapacity" maxlength="16" autocomplete="off" placeholder="256GB" value="$(ConvertTo-HtmlText $Values['DeviceCapacity'])" />
+          </div>
+          <div class="field">
+            <label for="partNumber">Part number <span class="optional">(optional)</span></label>
+            <input type="text" id="partNumber" name="partNumber" maxlength="20" autocomplete="off" spellcheck="false" placeholder="MLY33LL/A" value="$(ConvertTo-HtmlText $Values['PartNumber'])" />
+          </div>
+        </div>
+        <div class="group">Wipe details</div>
+$wipeFields
+        <button type="submit">Generate manual certificate</button>
       </form>
       <p class="foot"><a href="$BasePath">&larr; look up another device</a></p>
 "@
-    New-SplitPage -Title "$serial - Apple Device Erasure Certificate" -Body $body -Wide -NoPanel
+    New-SplitPage -Title "$Serial - Manual Apple Device Erasure Certificate" -Body $body -Wide -NoPanel
 }
 
 
@@ -500,6 +634,15 @@ try {
     if (-not $LogPath) { $LogPath = Join-Path $config.DataPath 'AppleCertServer.log' }
     $options = Import-CertificateOption -Path $OptionsPath
     $groupSid = Resolve-AllowedGroupSid -Group $config.AllowedGroup
+    # The manual path is off unless a group is named for it.
+    $manualGroupSid = $null
+    if ($config.ManualAllowedGroup) { $manualGroupSid = Resolve-AllowedGroupSid -Group $config.ManualAllowedGroup }
+
+    # A register from before the manual columns is brought up to date now,
+    # with a .bak copy beside it, rather than on the first certificate.
+    if (Update-RegisterLayout -DataPath $config.DataPath) {
+        $registerUpgraded = $true
+    }
 
     # Prove the key loads now, not on the first certificate. Nothing of it is kept.
     $probeKey = Import-EcPrivateKey -Path $config.PrivateKeyPath
@@ -547,8 +690,11 @@ catch {
 $runtime = "PowerShell $($PSVersionTable.PSVersion) ($($PSVersionTable.PSEdition))"
 $supportShown = $config.SupportEmail
 if (-not $supportShown) { $supportShown = '(none - set SupportEmail in the config)' }
-Write-ServerLog ("STARTED  https://+:{0}{1}  auth={2}  group={3}  origin={4}  data={5}  support={6}  {7}  pid={8}" -f
-                 $Port, $BasePath, $AuthScheme, $config.AllowedGroup, $config.PublicOrigin,
+$manualShown = $config.ManualAllowedGroup
+if (-not $manualShown) { $manualShown = '(off - set ManualAllowedGroup in the config)' }
+if ($registerUpgraded) { Write-ServerLog 'REGISTER UPDATED to the current columns (previous copy: register.csv.bak)' }
+Write-ServerLog ("STARTED  https://+:{0}{1}  auth={2}  group={3}  manual={4}  origin={5}  data={6}  support={7}  {8}  pid={9}" -f
+                 $Port, $BasePath, $AuthScheme, $config.AllowedGroup, $manualShown, $config.PublicOrigin,
                  $config.DataPath, $supportShown, $runtime, $PID)
 
 $security = Get-AppleCertSecurityHeader
@@ -573,6 +719,10 @@ try {
         $path = $req.Url.AbsolutePath
         if ($path.StartsWith($basePrefix, [StringComparison]::OrdinalIgnoreCase)) { $path = $path.Substring($basePrefix.Length) }
         if (-not $path.StartsWith('/')) { $path = '/' + $path }
+
+        # Manual certificates: only when the path is on and the caller is in its group.
+        $canManual = $false
+        if ($manualGroupSid) { $canManual = Test-AllowedUser -Principal $principal -GroupSid $manualGroupSid }
 
         $method   = $req.HttpMethod
         $status   = 200
@@ -610,7 +760,7 @@ try {
                     $result = Get-AppleBusinessDevice -Serial $serial -Config $config
                     if (-not $result.Found) {
                         $status = 404
-                        $body = New-FormPage -User $user -Serial $serial -Error $result.Message -Hint $NotFoundHint
+                        $body = Get-NotFoundPage -User $user -Serial $serial -Message $result.Message -CanManual $canManual
                         Write-RequestLog -User $user -Serial $serial -Outcome 'not found in Apple Business'
                     } else {
                         $history = @(Get-CertificateHistory -DataPath $config.DataPath -Serial $serial)
@@ -619,7 +769,46 @@ try {
                     }
                 }
             }
-            elseif ($path -match '^/certificate/?$' -and $method -eq 'POST') {
+            elseif ($path -match '^/manual/?$' -and $method -eq 'GET') {
+                $serial = ([string]$req.QueryString['serial']).Trim().ToUpperInvariant()
+                $serialForLog = $serial
+
+                if (-not $canManual) {
+                    $status = 403
+                    $body = New-ErrorPage -Title 'No access' `
+                                -Detail 'Your account is not allowed to issue certificates with manually entered details.'
+                    Write-RequestLog -User $user -Serial $serial -Outcome 'REFUSED manual form (not in manual group)'
+                }
+                elseif (-not (Test-SerialNumber $serial)) {
+                    $status = 400
+                    $body = New-FormPage -User $user -Serial $serial `
+                                -Error 'That does not look like a serial number. Letters and digits only, up to 32.'
+                    Write-RequestLog -User $user -Serial $serial -Outcome 'rejected manual form (bad serial)'
+                }
+                else {
+                    # Manual entry only for a serial Apple really does not return.
+                    $result = $null
+                    try { $result = Get-AppleBusinessDevice -Serial $serial -Config $config }
+                    catch {
+                        $status = 503
+                        $body = New-ErrorPage -Title 'Apple Business could not be checked' `
+                                    -Detail 'A manual certificate needs Apple Business to confirm it has no record of the device. Try again in a few minutes.'
+                        Write-RequestLog -User $user -Serial $serial -Outcome "manual form unavailable ($($_.Exception.Message))"
+                    }
+                    if ($result -and $result.Found) {
+                        $status = 303
+                        $redirect = "${BasePath}device?serial=$serial"
+                        Write-RequestLog -User $user -Serial $serial -Outcome 'manual form: found in Apple Business, sent to device page'
+                    }
+                    elseif ($result) {
+                        $history = @(Get-CertificateHistory -DataPath $config.DataPath -Serial $serial)
+                        $body = New-ManualPage -Serial $serial -History $history
+                        Write-RequestLog -User $user -Serial $serial -Outcome "manual form shown ($($history.Count) existing)"
+                    }
+                }
+            }
+            elseif ($path -match '^/certificate(/manual)?/?$' -and $method -eq 'POST') {
+                $isManualPost = $path -match '^/certificate/manual/?$'
 
                 $origin = $req.Headers['Origin']
                 if (-not (Test-RequestOrigin -Origin $origin -ExpectedOrigin $config.PublicOrigin)) {
@@ -649,6 +838,91 @@ try {
                     }
                     Write-RequestLog -User $user -Serial '-' -Outcome "REFUSED POST (body $($bodyRead.Status))"
                 }
+                elseif ($isManualPost -and -not $canManual) {
+                    $status = 403
+                    $body = New-ErrorPage -Title 'No access' `
+                                -Detail 'Your account is not allowed to issue certificates with manually entered details.'
+                    Write-RequestLog -User $user -Serial '-' -Outcome 'REFUSED manual POST (not in manual group)'
+                }
+                elseif ($isManualPost) {
+                    $form = [System.Web.HttpUtility]::ParseQueryString($bodyRead.Text)
+                    $serial = ([string]$form['serial']).Trim().ToUpperInvariant()
+                    $serialForLog = $serial
+                    $values = @{
+                        Reason             = [string]$form['reason']
+                        ReasonDetail       = [string]$form['reasonDetail']
+                        SerialConfirm      = [string]$form['serialConfirm']
+                        DeviceType         = [string]$form['deviceType']
+                        Model              = [string]$form['model']
+                        DeviceCapacity     = [string]$form['deviceCapacity']
+                        PartNumber         = [string]$form['partNumber']
+                        WipeMethod         = [string]$form['wipeMethod']
+                        ComplianceStandard = [string]$form['complianceStandard']
+                        WipeDate           = [string]$form['wipeDate']
+                        AssetTag           = ([string]$form['assetTag']).Trim()
+                        Notes              = [string]$form['notes']
+                    }
+
+                    if (-not (Test-SerialNumber $serial)) {
+                        $status = 400
+                        $body = New-FormPage -User $user -Error 'That does not look like a serial number.'
+                        Write-RequestLog -User $user -Serial $serial -Outcome 'rejected manual POST (bad serial)'
+                    }
+                    else {
+                        # Ask Apple again, now: if it has the device, the
+                        # details must come from Apple; if Apple cannot be
+                        # reached, an outage is no reason to type them in.
+                        $result = $null
+                        try { $result = Get-AppleBusinessDevice -Serial $serial -Config $config }
+                        catch {
+                            $status = 503
+                            $body = New-ErrorPage -Title 'Apple Business could not be checked' `
+                                        -Detail 'The certificate was not issued: a manual certificate needs Apple Business to confirm it has no record of the device. Try again in a few minutes.'
+                            Write-RequestLog -User $user -Serial $serial -Outcome "rejected manual POST (Apple unavailable: $($_.Exception.Message))"
+                        }
+                        if ($result -and $result.Found) {
+                            $status = 409
+                            $body = New-ErrorPage -Title 'Device found in Apple Business' `
+                                        -Detail 'The certificate was not issued: Apple Business has this device, so its details must come from Apple.' `
+                                        -LinkHref "${BasePath}device?serial=$serial" -LinkText 'Open the device page'
+                            Write-RequestLog -User $user -Serial $serial -Outcome 'rejected manual POST (found in Apple Business)'
+                        }
+                        elseif ($result) {
+                            $now = [DateTimeOffset]::Now
+                            $problems = @(Test-ManualDeviceInput -Serial $serial -SerialConfirm $values.SerialConfirm `
+                                              -DeviceType $values.DeviceType -Model $values.Model `
+                                              -DeviceCapacity $values.DeviceCapacity -PartNumber $values.PartNumber `
+                                              -Reason $values.Reason -ReasonDetail $values.ReasonDetail)
+                            $problems += @(Test-CertificateInput -Options $options -WipeMethod $values.WipeMethod `
+                                               -ComplianceStandard $values.ComplianceStandard -WipeDate $values.WipeDate `
+                                               -Notes $values.Notes -AssetTag $values.AssetTag -Today $now.Date)
+                            if ($problems.Count -gt 0) {
+                                $status = 400
+                                $history = @(Get-CertificateHistory -DataPath $config.DataPath -Serial $serial)
+                                $body = New-ManualPage -Serial $serial -History $history -Problems $problems -Values $values
+                                Write-RequestLog -User $user -Serial $serial -Outcome "rejected manual POST ($($problems -join ' '))"
+                            }
+                            else {
+                                $tech = Get-TechnicianIdentity -Principal $principal
+                                $manualDevice = New-ManualDevice -Serial $serial -DeviceType $values.DeviceType `
+                                                    -Model $values.Model -DeviceCapacity $values.DeviceCapacity `
+                                                    -PartNumber $values.PartNumber
+                                $issued = New-IssuedCertificate -DataPath $config.DataPath -Device $manualDevice `
+                                              -Options $options -Technician $tech -WipeMethod $values.WipeMethod `
+                                              -ComplianceStandard $values.ComplianceStandard -WipeDate $values.WipeDate `
+                                              -Notes $values.Notes -AssetTag $values.AssetTag -HomeLink $BasePath -IssuedAt $now `
+                                              -DeviceSource 'Manual' -ManualReason $values.Reason `
+                                              -ManualReasonDetail $values.ReasonDetail
+                                Write-RequestLog -User $user -Serial $serial `
+                                    -Outcome ("ISSUED {0}  MANUAL reason={1}  method={2}  standard={3}  wiped={4}  sha256={5}  ad={6}" -f
+                                              $issued.CertificateID, $issued.ManualReason, $issued.WipeMethod,
+                                              $issued.ComplianceStandard, $issued.WipeDateIso, $issued.Sha256, $tech.Source)
+                                $status = 303
+                                $redirect = "${BasePath}certificate?id=$($issued.CertificateID)"
+                            }
+                        }
+                    }
+                }
                 else {
                     $form = [System.Web.HttpUtility]::ParseQueryString($bodyRead.Text)
 
@@ -674,7 +948,7 @@ try {
                         $result = Get-AppleBusinessDevice -Serial $serial -Config $config
                         if (-not $result.Found) {
                             $status = 404
-                            $body = New-FormPage -User $user -Serial $serial -Error $result.Message -Hint $NotFoundHint
+                            $body = Get-NotFoundPage -User $user -Serial $serial -Message $result.Message -CanManual $canManual
                             Write-RequestLog -User $user -Serial $serial -Outcome 'rejected POST (not in Apple Business)'
                         }
                         else {
