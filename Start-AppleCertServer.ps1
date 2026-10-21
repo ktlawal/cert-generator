@@ -572,7 +572,7 @@ $errHtml      <form method="post" action="${BasePath}certificate/manual">
         </div>
         <div class="group">Wipe details</div>
 $wipeFields
-        <button type="submit">Generate manual certificate</button>
+        <button type="submit">Generate certificate manually</button>
       </form>
       <p class="foot"><a href="$BasePath">&larr; look up another device</a></p>
 "@
