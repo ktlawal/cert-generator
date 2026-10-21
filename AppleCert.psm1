@@ -45,7 +45,7 @@ $script:WipeDateMaxAgeDays   = 180
 $script:ManualDeviceTypes     = @('iPhone', 'iPad', 'Mac', 'Apple TV', 'Apple Watch', 'Apple Vision')
 $script:ManualReasons         = @('Released from Apple Business', 'Never enrolled in Apple Business', 'Other')
 $script:ManualNotice          = 'Device details entered manually'
-$script:ManualModelPattern    = '^[A-Za-z0-9 ()\-,./+&''"]{1,80}\z'
+$script:ManualModelPattern    = '^[A-Za-z0-9 ()\-,./+&''"]{0,80}\z'
 $script:ManualCapacityPattern = '^[A-Za-z0-9 .]{0,16}\z'
 $script:ManualPartPattern     = '^[A-Za-z0-9/\-]{0,20}\z'
 $script:ManualDetailMaxLength = 200
@@ -661,7 +661,7 @@ function Test-ManualDeviceInput {
         $errors += 'Choose a device type from the list.'
     }
     if ((ConvertTo-SingleLine $Model) -cnotmatch $script:ManualModelPattern) {
-        $errors += 'Model is required: up to 80 letters, digits, spaces and ( ) - , . / + & '' ".'
+        $errors += 'Model can be up to 80 letters, digits, spaces and ( ) - , . / + & '' ".'
     }
     if ((ConvertTo-SingleLine $DeviceCapacity) -cnotmatch $script:ManualCapacityPattern) {
         $errors += 'Device capacity can be up to 16 letters, digits, spaces and dots, such as 256GB.'

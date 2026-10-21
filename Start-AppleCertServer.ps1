@@ -557,8 +557,8 @@ $errHtml      <form method="post" action="${BasePath}certificate/manual">
           </div>
         </div>
         <div class="field">
-          <label for="model">Model</label>
-          <input type="text" id="model" name="model" required maxlength="80" autocomplete="off" placeholder="MacBook Air 13-inch (M2, 2022)" value="$(ConvertTo-HtmlText $Values['Model'])" />
+          <label for="model">Model <span class="optional">(optional)</span></label>
+          <input type="text" id="model" name="model" maxlength="80" autocomplete="off" placeholder="MacBook Air 13-inch (M2, 2022)" value="$(ConvertTo-HtmlText $Values['Model'])" />
         </div>
         <div class="row">
           <div class="field">
