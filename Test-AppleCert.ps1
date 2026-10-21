@@ -173,11 +173,6 @@ try {
     Assert-That 'extra header refused'      (Get-Support ',"SupportEmail":"a@example.org?bcc=x@evil.example"') ''
     Assert-That 'markup refused'            (Get-Support ',"SupportEmail":"a@example.org\"><b>"')       ''
     Assert-That 'two addresses refused'     (Get-Support ',"SupportEmail":"a@example.org,b@example.org"') ''
-    # ManualAllowedGroup is optional too: blank turns the manual path off.
-    Get-Support ',"ManualAllowedGroup":" DOMAIN\\AppleCert-Manual "' | Out-Null
-    Assert-That 'manual group read, trimmed' (Import-AppleCertConfig -Path $cfgPath).ManualAllowedGroup 'DOMAIN\AppleCert-Manual'
-    Get-Support '' | Out-Null
-    Assert-That 'manual group missing is blank' (Import-AppleCertConfig -Path $cfgPath).ManualAllowedGroup ''
 }
 finally { Remove-Item -LiteralPath $cfgDir -Recurse -Force -ErrorAction SilentlyContinue }
 

@@ -106,7 +106,7 @@ const doc = new Document({
       step('Press Print and choose Save as PDF, or a printer.'),
       new Paragraph({ spacing: { before: 140, after: 140 }, border: { bottom: { style: BorderStyle.SINGLE, size: 4, color: LINE, space: 1 } }, children: [] }),
       heading('Worth knowing', 22, 120),
-      bullet('Issue the certificate before releasing the device from Apple Business. A released device may no longer be found. Then only someone allowed to issue manual certificates can certify it, and the certificate says the details were entered manually.'),
+      bullet('Issue the certificate before releasing the device from Apple Business. A released device may no longer be found. Then use the link on the not-found message to enter the details manually; the certificate will say so.'),
       bullet('Device details come straight from Apple Business and cannot be edited here. If something looks wrong, check the device in Apple Business.'),
       bullet('Every certificate has its own ID, such as AC-2026-000001. Reopen one at any time from its address, or from the list on the device page.'),
       bullet('The wipe date can be today or up to 180 days back. Notes can be up to 500 characters and are printed on the certificate.'),

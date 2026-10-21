@@ -187,9 +187,6 @@ function Import-AppleCertConfig {
         # missing, still the placeholder, or not a plain address, so nothing
         # odd can reach a page or a mailto: link.
         SupportEmail   = ConvertTo-SupportEmail ([string](Get-DataProperty $cfg 'SupportEmail'))
-        # Optional: who may issue certificates with manually entered device
-        # details. Blank turns the manual path off for everyone.
-        ManualAllowedGroup = ([string](Get-DataProperty $cfg 'ManualAllowedGroup')).Trim()
     }
 }
 

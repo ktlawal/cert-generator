@@ -23,8 +23,8 @@
         GET  /applecert/health               OK
 
     Windows Integrated sign-in, HTTPS only, and every route but /health
-    checked against AllowedGroup from the config. The two manual routes also
-    need ManualAllowedGroup, and are off when it is not set. The Apple key, client ID and
+    checked against AllowedGroup from the config, the manual routes included.
+    The Apple key, client ID and
     key ID live in the config outside the repo and never reach a page or the
     log.
 
@@ -263,19 +263,14 @@ function Format-SignedIn {
 
 # Shown under "no device with that serial". Apple Business does not reliably
 # keep released devices visible to the API, so certificates are issued before
-# a device is released. Someone in ManualAllowedGroup gets a link to the
-# manual form as well; everyone else is told who can help.
-$NotFoundHint = 'Check the serial. If the device was released from Apple Business or never enrolled, a certificate with manually entered details can be issued by someone allowed to. Issue certificates before releasing devices.'
-$NotFoundHintManual = 'Check the serial. If the device was released from Apple Business or never enrolled, you can issue a certificate with the details entered manually. Issue certificates before releasing devices.'
+# a device is released; the link to the manual form is for when that did not
+# happen.
+$NotFoundHint = 'Check the serial. If the device was released from Apple Business or never enrolled, you can issue a certificate with the details entered manually. Issue certificates before releasing devices.'
 
 function Get-NotFoundPage {
-    # The serial form with Apple's "not found", and the manual link for those
-    # allowed to use it.
-    param([string]$User, [string]$Serial, [string]$Message, [bool]$CanManual)
-    if ($CanManual) {
-        return New-FormPage -User $User -Serial $Serial -Error $Message -Hint $NotFoundHintManual -ManualSerial $Serial
-    }
-    New-FormPage -User $User -Serial $Serial -Error $Message -Hint $NotFoundHint
+    # The serial form with Apple's "not found", and the link to the manual form.
+    param([string]$User, [string]$Serial, [string]$Message)
+    New-FormPage -User $User -Serial $Serial -Error $Message -Hint $NotFoundHint -ManualSerial $Serial
 }
 
 function New-FormPage {
@@ -505,7 +500,7 @@ function Format-WipeFields {
 function New-ManualPage {
     <#
         Manual entry, for a serial Apple Business does not return. Reached
-        only from "not found", and only by ManualAllowedGroup. The technician
+        only from "not found", by anyone in AllowedGroup. The technician
         types the serial again, the device details and a reason; the wipe
         fields are the same as on the device page.
     #>
@@ -634,9 +629,6 @@ try {
     if (-not $LogPath) { $LogPath = Join-Path $config.DataPath 'AppleCertServer.log' }
     $options = Import-CertificateOption -Path $OptionsPath
     $groupSid = Resolve-AllowedGroupSid -Group $config.AllowedGroup
-    # The manual path is off unless a group is named for it.
-    $manualGroupSid = $null
-    if ($config.ManualAllowedGroup) { $manualGroupSid = Resolve-AllowedGroupSid -Group $config.ManualAllowedGroup }
 
     # A register from before the manual columns is brought up to date now,
     # with a .bak copy beside it, rather than on the first certificate.
@@ -690,11 +682,9 @@ catch {
 $runtime = "PowerShell $($PSVersionTable.PSVersion) ($($PSVersionTable.PSEdition))"
 $supportShown = $config.SupportEmail
 if (-not $supportShown) { $supportShown = '(none - set SupportEmail in the config)' }
-$manualShown = $config.ManualAllowedGroup
-if (-not $manualShown) { $manualShown = '(off - set ManualAllowedGroup in the config)' }
 if ($registerUpgraded) { Write-ServerLog 'REGISTER UPDATED to the current columns (previous copy: register.csv.bak)' }
-Write-ServerLog ("STARTED  https://+:{0}{1}  auth={2}  group={3}  manual={4}  origin={5}  data={6}  support={7}  {8}  pid={9}" -f
-                 $Port, $BasePath, $AuthScheme, $config.AllowedGroup, $manualShown, $config.PublicOrigin,
+Write-ServerLog ("STARTED  https://+:{0}{1}  auth={2}  group={3}  origin={4}  data={5}  support={6}  {7}  pid={8}" -f
+                 $Port, $BasePath, $AuthScheme, $config.AllowedGroup, $config.PublicOrigin,
                  $config.DataPath, $supportShown, $runtime, $PID)
 
 $security = Get-AppleCertSecurityHeader
@@ -719,10 +709,6 @@ try {
         $path = $req.Url.AbsolutePath
         if ($path.StartsWith($basePrefix, [StringComparison]::OrdinalIgnoreCase)) { $path = $path.Substring($basePrefix.Length) }
         if (-not $path.StartsWith('/')) { $path = '/' + $path }
-
-        # Manual certificates: only when the path is on and the caller is in its group.
-        $canManual = $false
-        if ($manualGroupSid) { $canManual = Test-AllowedUser -Principal $principal -GroupSid $manualGroupSid }
 
         $method   = $req.HttpMethod
         $status   = 200
@@ -760,7 +746,7 @@ try {
                     $result = Get-AppleBusinessDevice -Serial $serial -Config $config
                     if (-not $result.Found) {
                         $status = 404
-                        $body = Get-NotFoundPage -User $user -Serial $serial -Message $result.Message -CanManual $canManual
+                        $body = Get-NotFoundPage -User $user -Serial $serial -Message $result.Message
                         Write-RequestLog -User $user -Serial $serial -Outcome 'not found in Apple Business'
                     } else {
                         $history = @(Get-CertificateHistory -DataPath $config.DataPath -Serial $serial)
@@ -773,13 +759,7 @@ try {
                 $serial = ([string]$req.QueryString['serial']).Trim().ToUpperInvariant()
                 $serialForLog = $serial
 
-                if (-not $canManual) {
-                    $status = 403
-                    $body = New-ErrorPage -Title 'No access' `
-                                -Detail 'Your account is not allowed to issue certificates with manually entered details.'
-                    Write-RequestLog -User $user -Serial $serial -Outcome 'REFUSED manual form (not in manual group)'
-                }
-                elseif (-not (Test-SerialNumber $serial)) {
+                if (-not (Test-SerialNumber $serial)) {
                     $status = 400
                     $body = New-FormPage -User $user -Serial $serial `
                                 -Error 'That does not look like a serial number. Letters and digits only, up to 32.'
@@ -837,12 +817,6 @@ try {
                         $body = New-ErrorPage -Title 'Request timed out' -Detail 'The form did not arrive in time. Please try again.'
                     }
                     Write-RequestLog -User $user -Serial '-' -Outcome "REFUSED POST (body $($bodyRead.Status))"
-                }
-                elseif ($isManualPost -and -not $canManual) {
-                    $status = 403
-                    $body = New-ErrorPage -Title 'No access' `
-                                -Detail 'Your account is not allowed to issue certificates with manually entered details.'
-                    Write-RequestLog -User $user -Serial '-' -Outcome 'REFUSED manual POST (not in manual group)'
                 }
                 elseif ($isManualPost) {
                     $form = [System.Web.HttpUtility]::ParseQueryString($bodyRead.Text)
@@ -948,7 +922,7 @@ try {
                         $result = Get-AppleBusinessDevice -Serial $serial -Config $config
                         if (-not $result.Found) {
                             $status = 404
-                            $body = Get-NotFoundPage -User $user -Serial $serial -Message $result.Message -CanManual $canManual
+                            $body = Get-NotFoundPage -User $user -Serial $serial -Message $result.Message
                             Write-RequestLog -User $user -Serial $serial -Outcome 'rejected POST (not in Apple Business)'
                         }
                         else {
