@@ -309,6 +309,15 @@ Get-Content C:\ProgramData\AppleCert\AppleCertServer.log -Tail 3  # STARTED ...
 If it is not running, `task-output.log` and the last lines of
 `AppleCertServer.log` say why (`FAILED TO START` with the reason).
 
+**At boot** the task can run before Windows has its secure channel to the
+domain, and the `AllowedGroup` lookup then fails with "The trust relationship
+between this workstation and the primary domain failed" (seen 4 Nov 2026: the
+app did not come back after a reboot). The server now retries that lookup
+every 15 seconds for up to 5 minutes, logging `WAITING for the domain …`, and
+starts as soon as it answers. If it still fails after 5 minutes it logs
+`FAILED TO START` as before. If that happens with the machine fully up, check
+the trust itself: `Test-ComputerSecureChannel` should say `True`.
+
 Then, from a technician PC, at `https://<lab-machine>.<domain>:5000/applecert/`:
 
 1. Look up a real serial. The device page shows Apple's details and "No
