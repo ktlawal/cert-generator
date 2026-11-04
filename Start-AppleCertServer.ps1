@@ -76,6 +76,12 @@ $MaxBodyBytes = 16KB
 # The whole form must arrive within this many seconds. The server answers one
 # request at a time; without a deadline one slow client stalls everyone.
 $BodyTimeoutSeconds = 10
+# At boot the startup task can run before Windows has its secure channel to
+# the domain ("The trust relationship between this workstation and the
+# primary domain failed"), so the AllowedGroup lookup is retried for this
+# long before the server gives up. A real typo still stops it, just later.
+$GroupLookupWaitSeconds  = 300
+$GroupLookupRetrySeconds = 15
 
 
 # ------------------------------------------------------------------
@@ -628,7 +634,16 @@ try {
     $config  = Import-AppleCertConfig -Path $ConfigPath
     if (-not $LogPath) { $LogPath = Join-Path $config.DataPath 'AppleCertServer.log' }
     $options = Import-CertificateOption -Path $OptionsPath
-    $groupSid = Resolve-AllowedGroupSid -Group $config.AllowedGroup
+    $groupSid = $null
+    $waitUntil = (Get-Date).AddSeconds($GroupLookupWaitSeconds)
+    while ($null -eq $groupSid) {
+        try { $groupSid = Resolve-AllowedGroupSid -Group $config.AllowedGroup }
+        catch {
+            if ((Get-Date) -ge $waitUntil) { throw }
+            Write-ServerLog "WAITING for the domain to look up $($config.AllowedGroup) - $($_.Exception.Message)"
+            Start-Sleep -Seconds $GroupLookupRetrySeconds
+        }
+    }
 
     # A register from before the manual columns is brought up to date now,
     # with a .bak copy beside it, rather than on the first certificate.
