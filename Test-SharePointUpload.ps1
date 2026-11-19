@@ -86,11 +86,7 @@ $html    = Join-Path $work "$Id.html"
 # Rendered under the ID alone: no spaces, so no quoting to get wrong. The
 # name with the serial is only the name it is uploaded under.
 $pdf     = Join-Path $work "$Id.pdf"
-# A fresh profile every run. With a shared one, a copy of Edge left behind by
-# an earlier run takes the page instead, and prints its own blank tab.
-$edgeProfile = Join-Path $work ('edge-' + [Guid]::NewGuid().ToString('n'))
 [IO.File]::WriteAllBytes($html, $bytes)
-if (Test-Path -LiteralPath $pdf) { Remove-Item -LiteralPath $pdf -Force }
 
 # Start-Process joins its arguments with spaces, so a path is quoted only
 # when it has a space in it (a DataPath somewhere other than the default).
@@ -100,31 +96,87 @@ function Format-PathArg([string]$Path) {
 }
 $pageUri = (New-Object System.UriBuilder -ArgumentList 'file', '', -1, $html.Replace('\', '/')).Uri.AbsoluteUri
 if ($pageUri -notmatch '^file:///') { Stop-Test "Could not build a file address for $html." }
-# --do-not-de-elevate: started from an elevated window, Edge otherwise hands
-# itself to a non-elevated copy and exits at once (code 0), and that copy may
-# not write to the locked data folder, so no PDF ever appears.
-$edgeArgs = @('--headless', '--do-not-de-elevate', '--disable-gpu', '--no-first-run', '--no-pdf-header-footer',
-              "--user-data-dir=$(Format-PathArg $edgeProfile)", "--print-to-pdf=$(Format-PathArg $pdf)", $pageUri)
-$sw = [Diagnostics.Stopwatch]::StartNew()
-try { $proc = Start-Process -FilePath $EdgePath -ArgumentList $edgeArgs -PassThru -WindowStyle Hidden -ErrorAction Stop }
-catch { Stop-Test "Edge could not be started: $($_.Exception.Message)" }
-$finished = $proc.WaitForExit(60000)
-if (-not $finished) {
-    # Edge runs as several processes: stop them all, not just the first.
-    & taskkill.exe /PID $proc.Id /T /F 2>&1 | Out-Null
-    try { $proc.Kill() } catch { }
-}
-# A PDF can land a moment after the first process exits: give it 10 s.
-if ($finished) {
-    $graceUntil = (Get-Date).AddSeconds(10)
-    while (-not (Test-Path -LiteralPath $pdf) -and (Get-Date) -lt $graceUntil) { Start-Sleep -Milliseconds 250 }
-}
-$sw.Stop()
-Remove-Item -LiteralPath $html -Force -ErrorAction SilentlyContinue
-Remove-Item -LiteralPath $edgeProfile -Recurse -Force -ErrorAction SilentlyContinue
-if (-not $finished) { Stop-Test 'Edge did not finish the PDF within 60 seconds.' }
 
-if (-not (Test-Path -LiteralPath $pdf)) { Stop-Test "Edge exited (code $($proc.ExitCode)) without writing a PDF." }
+function Invoke-EdgePdf {
+    <#
+        One headless Edge run: the page to $pdf, within 60 s. Edge's own log
+        (stderr) goes to a file beside it, so a failure can say why.
+        Returns Ok, TimedOut, ExitCode, Seconds, LogTail and LogPath.
+    #>
+    param([string[]]$ExtraArgs = @(), [string]$Label)
+    if (Test-Path -LiteralPath $pdf) { Remove-Item -LiteralPath $pdf -Force }
+    # A fresh profile every run. With a shared one, a copy of Edge left behind
+    # by an earlier run takes the page instead, and prints its own blank tab.
+    $edgeProfile = Join-Path $work ('edge-' + [Guid]::NewGuid().ToString('n'))
+    $logOut = Join-Path $work "edge-$Label-out.log"
+    $logErr = Join-Path $work "edge-$Label.log"
+    # --do-not-de-elevate: started from an elevated window, Edge otherwise
+    # hands itself to a non-elevated copy and exits at once (code 0), and that
+    # copy may not write to the locked data folder, so no PDF ever appears.
+    $edgeArgs = @('--headless', '--do-not-de-elevate', '--disable-gpu', '--no-first-run', '--no-pdf-header-footer',
+                  '--enable-logging=stderr') + $ExtraArgs +
+                @("--user-data-dir=$(Format-PathArg $edgeProfile)", "--print-to-pdf=$(Format-PathArg $pdf)", $pageUri)
+    $sw = [Diagnostics.Stopwatch]::StartNew()
+    try {
+        $proc = Start-Process -FilePath $EdgePath -ArgumentList $edgeArgs -PassThru -NoNewWindow `
+                    -RedirectStandardOutput $logOut -RedirectStandardError $logErr -ErrorAction Stop
+    }
+    catch { Stop-Test "Edge could not be started: $($_.Exception.Message)" }
+    $finished = $proc.WaitForExit(60000)
+    if (-not $finished) {
+        # Edge runs as several processes: stop them all, not just the first.
+        & taskkill.exe /PID $proc.Id /T /F 2>&1 | Out-Null
+        try { $proc.Kill() } catch { }
+    }
+    else {
+        # A PDF can land a moment after the first process exits: give it 10 s.
+        $graceUntil = (Get-Date).AddSeconds(10)
+        while (-not (Test-Path -LiteralPath $pdf) -and (Get-Date) -lt $graceUntil) { Start-Sleep -Milliseconds 250 }
+    }
+    $sw.Stop()
+    Remove-Item -LiteralPath $edgeProfile -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $logOut -Force -ErrorAction SilentlyContinue
+    $code = $null
+    if ($finished) { $code = $proc.ExitCode }
+    $tail = @()
+    if (Test-Path -LiteralPath $logErr) {
+        $tail = @(Get-Content -LiteralPath $logErr -Tail 8 -ErrorAction SilentlyContinue | Where-Object { $_.Trim() })
+    }
+    [pscustomobject]@{
+        Ok = (Test-Path -LiteralPath $pdf); TimedOut = (-not $finished); ExitCode = $code
+        Seconds = $sw.Elapsed.TotalSeconds; LogTail = $tail; LogPath = $logErr
+    }
+}
+
+function Show-EdgeFailure($Run, [string]$Label) {
+    $why = "exited (code $($Run.ExitCode)) without writing a PDF"
+    if ($Run.TimedOut) { $why = 'did not finish within 60 seconds' }
+    Show-Step "Edge ($Label)" $why 'Yellow'
+    foreach ($line in $Run.LogTail) {
+        $l = [string]$line
+        if ($l.Length -gt 160) { $l = $l.Substring(0, 160) + '...' }
+        Write-Host "      $l" -ForegroundColor DarkGray
+    }
+    if (@($Run.LogTail).Count -eq 0) { Write-Host "      (nothing in Edge's log: $($Run.LogPath))" -ForegroundColor DarkGray }
+}
+
+# First as the upload task would want it; if that fails, once more with
+# Edge's sandbox off, which is what most often stops Edge running as SYSTEM.
+# The page is our own stored certificate, nothing from the web.
+$run = Invoke-EdgePdf -Label 'normal'
+$usedNoSandbox = $false
+if (-not $run.Ok) {
+    Show-EdgeFailure $run 'normal'
+    $run = Invoke-EdgePdf -Label 'no-sandbox' -ExtraArgs @('--no-sandbox')
+    if (-not $run.Ok) {
+        Show-EdgeFailure $run 'no sandbox'
+        Remove-Item -LiteralPath $html -Force -ErrorAction SilentlyContinue
+        Stop-Test "Edge made no PDF, with or without its sandbox. Its logs are in $work."
+    }
+    $usedNoSandbox = $true
+}
+Remove-Item -LiteralPath $html -Force -ErrorAction SilentlyContinue
+
 $pdfBytes = [IO.File]::ReadAllBytes($pdf)
 $head = [Text.Encoding]::ASCII.GetString($pdfBytes, 0, [Math]::Min(5, $pdfBytes.Length))
 if ($head -ne '%PDF-') { Stop-Test 'Edge wrote a file, but it is not a PDF.' }
@@ -140,7 +192,9 @@ if (-not ($pdfText.Contains("/Title ($Id ") -or $pdfText.Contains("FEFF$utf16Id"
 $pages = ([regex]::Matches($pdfText, '/Type\s*/Page[^s]')).Count
 $pageColor = 'Green'
 if ($pages -ne 1) { $pageColor = 'Yellow' }
-Show-Step 'PDF' ("{0:N0} KB, {1} page(s), {2:N1} s - {3}" -f ($pdfBytes.Length / 1KB), $pages, $sw.Elapsed.TotalSeconds, $pdf) $pageColor
+$how = 'Edge'
+if ($usedNoSandbox) { $how = 'Edge, sandbox off' }
+Show-Step 'PDF' ("{0:N0} KB, {1} page(s), {2:N1} s ({3}) - {4}" -f ($pdfBytes.Length / 1KB), $pages, $run.Seconds, $how, $pdf) $pageColor
 
 # --- Send it to the flow ------------------------------------------------
 [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
