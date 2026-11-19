@@ -99,7 +99,10 @@ function Format-PathArg([string]$Path) {
 }
 $pageUri = (New-Object System.UriBuilder -ArgumentList 'file', '', -1, $html.Replace('\', '/')).Uri.AbsoluteUri
 if ($pageUri -notmatch '^file:///') { Stop-Test "Could not build a file address for $html." }
-$edgeArgs = @('--headless', '--disable-gpu', '--no-first-run', '--no-pdf-header-footer',
+# --do-not-de-elevate: started from an elevated window, Edge otherwise hands
+# itself to a non-elevated copy and exits at once (code 0), and that copy may
+# not write to the locked data folder, so no PDF ever appears.
+$edgeArgs = @('--headless', '--do-not-de-elevate', '--disable-gpu', '--no-first-run', '--no-pdf-header-footer',
               "--user-data-dir=$(Format-PathArg $edgeProfile)", "--print-to-pdf=$(Format-PathArg $pdf)", $pageUri)
 $sw = [Diagnostics.Stopwatch]::StartNew()
 try { $proc = Start-Process -FilePath $EdgePath -ArgumentList $edgeArgs -PassThru -WindowStyle Hidden -ErrorAction Stop }
@@ -109,6 +112,11 @@ if (-not $finished) {
     # Edge runs as several processes: stop them all, not just the first.
     & taskkill.exe /PID $proc.Id /T /F 2>&1 | Out-Null
     try { $proc.Kill() } catch { }
+}
+# A PDF can land a moment after the first process exits: give it 10 s.
+if ($finished) {
+    $graceUntil = (Get-Date).AddSeconds(10)
+    while (-not (Test-Path -LiteralPath $pdf) -and (Get-Date) -lt $graceUntil) { Start-Sleep -Milliseconds 250 }
 }
 $sw.Stop()
 Remove-Item -LiteralPath $html -Force -ErrorAction SilentlyContinue
