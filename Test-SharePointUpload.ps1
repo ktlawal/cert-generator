@@ -67,7 +67,8 @@ $bytes = Get-IssuedCertificate -DataPath $config.DataPath -Id $Id
 if ($null -eq $bytes) { Stop-Test "No stored certificate $Id." }
 $row = @(Get-CertificateRegister -DataPath $config.DataPath | Where-Object { $_.CertificateID -ceq $Id })[0]
 if ($null -eq $row) { Stop-Test "$Id is not in the register." }
-$fileName = "$Id - $($row.SerialNumber).pdf"
+# The same name Save as PDF suggests, so a copy saved by hand is the same file.
+$fileName = (Get-CertificateTitle -Id $Id -Serial $row.SerialNumber) + '.pdf'
 Show-Step 'Certificate' "$Id, serial $($row.SerialNumber)"
 
 # --- PDF with Edge --------------------------------------------------------

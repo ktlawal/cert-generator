@@ -443,6 +443,8 @@ Unregister-ScheduledTask -TaskName 'AppleCert upload test' -Confirm:$false
 ```
 
 Expect `Running as NT AUTHORITY\SYSTEM`, a one-page PDF, and `SENT`; the file
-appears in the repository as `<ID> - <serial>.pdf`. The PDF stays in
+appears in the repository as `<ID> Certificate of Data Erasure <serial>.pdf`,
+the name Save as PDF suggests, so a certificate saved by hand and the same one
+uploaded are one file, not two. The PDF stays in
 `C:\ProgramData\AppleCert\upload-work` to open and check.
 

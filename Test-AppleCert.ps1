@@ -294,6 +294,7 @@ Assert-That 'notes escaped'                  ($html -match 'Line &lt;two&gt;')  
 Assert-That 'no raw markup from data'        ($html -match '<two>|<13-inch>')            'False'
 Assert-That 'certificate ID shown'           ($html -match '<td>AC-2026-000042</td>')     'True'
 Assert-That 'title names the ID (PDF name)'  ($html -match '<title>AC-2026-000042 Certificate of Data Erasure C02TEST0SN01</title>') 'True'
+Assert-That 'upload name matches the title'  ((Get-CertificateTitle -Id 'AC-2026-000042' -Serial 'C02TEST0SN01') + '.pdf') 'AC-2026-000042 Certificate of Data Erasure C02TEST0SN01.pdf'
 
 $blank = $data.PSObject.Copy(); $blank.AssetTag = ''; $blank.TechnicianEmail = ''
 $blankHtml = New-CertificateHtml -Data $blank

@@ -790,6 +790,17 @@ function New-CertificateData {
     }
 }
 
+function Get-CertificateTitle {
+    <#
+        "AC-2026-000042 Certificate of Data Erasure C02XXXXXXXXX": the page's
+        title, which the browser offers as the PDF's name on Save as PDF, and
+        the name an uploaded PDF gets, so a certificate saved by hand and the
+        same one uploaded are one file in SharePoint, not two.
+    #>
+    param([string]$Id, [string]$Serial)
+    "$Id Certificate of Data Erasure $Serial"
+}
+
 function New-CertificateHtml {
     <#
         The printable certificate, laid out from the Word template
@@ -860,7 +871,7 @@ function New-CertificateHtml {
     $toolbar += "  </div>`n"
 
     # The page title is what the browser offers as the PDF's file name.
-    $title = "$($Data.CertificateID) Certificate of Data Erasure $($Data.SerialNumber)"
+    $title = Get-CertificateTitle -Id $Data.CertificateID -Serial $Data.SerialNumber
 
     @"
 <!DOCTYPE html>
@@ -1323,7 +1334,7 @@ Export-ModuleMember -Function @(
     'Import-EcPrivateKey', 'New-AppleClientAssertion',
     'Get-AppleAccessToken', 'Clear-AppleAccessToken', 'Get-AppleTokenState',
     'Get-AppleBusinessDevice',
-    'Test-CertificateInput', 'New-CertificateData', 'New-CertificateHtml',
+    'Test-CertificateInput', 'New-CertificateData', 'New-CertificateHtml', 'Get-CertificateTitle',
     'Get-ManualOption', 'Test-ManualDeviceInput', 'New-ManualDevice',
     'Resolve-AllowedGroupSid', 'Test-AllowedUser', 'Get-TechnicianIdentity',
     'Read-LimitedBody', 'ConvertTo-CleanNotes',
