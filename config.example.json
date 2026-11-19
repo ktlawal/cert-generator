@@ -5,5 +5,7 @@
   "PublicOrigin":   "https://<lab-machine>.<domain>:5000",
   "AllowedGroup":   "DOMAIN\\AppleCert-Users",
   "DataPath":       "C:\\ProgramData\\AppleCert",
-  "SupportEmail":   "<team-mailbox>@<domain>"
+  "SupportEmail":   "<team-mailbox>@<domain>",
+  "SharePointFlowUrl": "<the flow's HTTP URL>",
+  "SharePointFlowKey": "<shared key, also set in the flow>"
 }

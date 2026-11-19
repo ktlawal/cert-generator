@@ -404,3 +404,45 @@ by thumbprint; when it renews (Dec 2026) both apps stop until it is re-bound.
 | Audit fixes under 5.1 | Full `Test-AppleCert.ps1` suite (register, notes cleaning, body limits, key, Apple-call checks) passed under Windows PowerShell 5.1 on the lab machine, 8 Oct 2026. |
 
 **Not verified yet:** the app itself on the lab machine (step 4).
+
+## SharePoint upload: proof (Nov 2026)
+
+Decided so far: certificates reach the SharePoint certificate repository
+through a Power Automate flow ("When an HTTP request is received", who can
+trigger: Anyone), not an Entra app registration. Checked 19 Nov: the trigger
+is licensed, "Anyone" is offered, and the lab machine reached a test flow
+(HTTP 200). The flow checks a shared key in the `x-applecert-key` header and
+that the file name starts `AC-`, ends `.pdf` and has no `/`, then saves it
+with SharePoint "Create file" as its owner, and answers 200 (saved) or 403.
+
+`Test-SharePointUpload.ps1 -Id <certificate ID>` is the proof: stored page ->
+PDF with Edge (headless, a fresh profile each run, 60 s limit, the PDF's
+title must be that certificate's) -> the flow, as JSON with the PDF in
+base64. It prints lengths only for the address and the key. Tested here
+against a stand-in flow with Chromium: saved, wrong key refused, wrong page
+refused before sending, a DataPath with a space, Edge missing, flow
+unreachable. Not yet run on the lab machine.
+
+Run it as SYSTEM, the way the upload task will run:
+
+1. Add `SharePointFlowUrl` and `SharePointFlowKey` to
+   `C:\ProgramData\AppleCert\config.json` (see `config.example.json`).
+2. Copy `Test-SharePointUpload.ps1` to `C:\Solutions\AppleCertGenerator` and unblock it.
+3. Elevated:
+
+```powershell
+$s   = 'C:\Solutions\AppleCertGenerator\Test-SharePointUpload.ps1'
+$out = 'C:\ProgramData\AppleCert\upload-test-output.log'
+$a   = "-NoProfile -ExecutionPolicy Bypass -Command `"& '$s' -Id '<certificate ID>' *> '$out'; exit `$LASTEXITCODE`""
+Register-ScheduledTask -TaskName 'AppleCert upload test' -User 'NT AUTHORITY\SYSTEM' -RunLevel Highest `
+    -Action (New-ScheduledTaskAction -Execute 'powershell.exe' -Argument $a) -Force
+Start-ScheduledTask -TaskName 'AppleCert upload test'
+Start-Sleep -Seconds 45
+Get-Content $out
+Unregister-ScheduledTask -TaskName 'AppleCert upload test' -Confirm:$false
+```
+
+Expect `Running as NT AUTHORITY\SYSTEM`, a one-page PDF, and `SENT`; the file
+appears in the repository as `<ID> - <serial>.pdf`. The PDF stays in
+`C:\ProgramData\AppleCert\upload-work` to open and check.
+
