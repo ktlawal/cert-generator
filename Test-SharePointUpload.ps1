@@ -109,12 +109,13 @@ function Invoke-EdgePdf {
     # by an earlier run takes the page instead, and prints its own blank tab.
     $edgeProfile = Join-Path $work ('edge-' + [Guid]::NewGuid().ToString('n'))
     $logOut = Join-Path $work "edge-$Label-out.log"
-    $logErr = Join-Path $work "edge-$Label.log"
+    $logErr = Join-Path $work "edge-$Label-err.log"
+    $logKeep = Join-Path $work "edge-$Label.log"
     # --do-not-de-elevate: started from an elevated window, Edge otherwise
     # hands itself to a non-elevated copy and exits at once (code 0), and that
     # copy may not write to the locked data folder, so no PDF ever appears.
     $edgeArgs = @('--headless', '--do-not-de-elevate', '--disable-gpu', '--no-first-run', '--no-pdf-header-footer',
-                  '--enable-logging=stderr') + $ExtraArgs +
+                  '--enable-logging', '--v=1') + $ExtraArgs +
                 @("--user-data-dir=$(Format-PathArg $edgeProfile)", "--print-to-pdf=$(Format-PathArg $pdf)", $pageUri)
     $sw = [Diagnostics.Stopwatch]::StartNew()
     try {
@@ -122,6 +123,9 @@ function Invoke-EdgePdf {
                     -RedirectStandardOutput $logOut -RedirectStandardError $logErr -ErrorAction Stop
     }
     catch { Stop-Test "Edge could not be started: $($_.Exception.Message)" }
+    # Windows PowerShell 5.1 reports no exit code for a redirected process
+    # unless its handle is taken while it runs.
+    $null = $proc.Handle
     $finished = $proc.WaitForExit(60000)
     if (-not $finished) {
         # Edge runs as several processes: stop them all, not just the first.
@@ -134,17 +138,31 @@ function Invoke-EdgePdf {
         while (-not (Test-Path -LiteralPath $pdf) -and (Get-Date) -lt $graceUntil) { Start-Sleep -Milliseconds 250 }
     }
     $sw.Stop()
-    Remove-Item -LiteralPath $edgeProfile -Recurse -Force -ErrorAction SilentlyContinue
-    Remove-Item -LiteralPath $logOut -Force -ErrorAction SilentlyContinue
-    $code = $null
-    if ($finished) { $code = $proc.ExitCode }
-    $tail = @()
-    if (Test-Path -LiteralPath $logErr) {
-        $tail = @(Get-Content -LiteralPath $logErr -Tail 8 -ErrorAction SilentlyContinue | Where-Object { $_.Trim() })
+    # On Windows Edge writes its log to chrome_debug.log in the profile, not
+    # to the console. Keep it (and anything it did print) before the profile
+    # goes, as edge-<label>.log.
+    $lines = @()
+    $debugLog = Join-Path $edgeProfile 'chrome_debug.log'
+    foreach ($f in @($debugLog, $logErr, $logOut)) {
+        if (Test-Path -LiteralPath $f) { $lines += @(Get-Content -LiteralPath $f -ErrorAction SilentlyContinue | Where-Object { $_.Trim() }) }
     }
+    if ($lines.Count -eq 0 -and (Test-Path -LiteralPath $edgeProfile)) {
+        $lines += "(no log; the profile folder holds: $((@(Get-ChildItem -LiteralPath $edgeProfile -Name) | Select-Object -First 12) -join ', '))"
+    }
+    elseif ($lines.Count -eq 0) {
+        $lines += '(no log, and Edge did not create its profile folder at all)'
+    }
+    $lines | Set-Content -LiteralPath $logKeep -Encoding UTF8
+    Remove-Item -LiteralPath $edgeProfile -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $logOut, $logErr -Force -ErrorAction SilentlyContinue
+    $code = $null
+    if ($finished) { try { $code = $proc.ExitCode } catch { } }
+    # The lines most likely to say why: errors first, else the last few.
+    $tail = @($lines | Where-Object { $_ -match 'ERROR|FATAL|denied|cannot|failed' } | Select-Object -Last 8)
+    if ($tail.Count -eq 0) { $tail = @($lines | Select-Object -Last 8) }
     [pscustomobject]@{
         Ok = (Test-Path -LiteralPath $pdf); TimedOut = (-not $finished); ExitCode = $code
-        Seconds = $sw.Elapsed.TotalSeconds; LogTail = $tail; LogPath = $logErr
+        Seconds = $sw.Elapsed.TotalSeconds; LogTail = $tail; LogPath = $logKeep
     }
 }
 
@@ -154,10 +172,10 @@ function Show-EdgeFailure($Run, [string]$Label) {
     Show-Step "Edge ($Label)" $why 'Yellow'
     foreach ($line in $Run.LogTail) {
         $l = [string]$line
-        if ($l.Length -gt 160) { $l = $l.Substring(0, 160) + '...' }
+        if ($l.Length -gt 200) { $l = $l.Substring(0, 200) + '...' }
         Write-Host "      $l" -ForegroundColor DarkGray
     }
-    if (@($Run.LogTail).Count -eq 0) { Write-Host "      (nothing in Edge's log: $($Run.LogPath))" -ForegroundColor DarkGray }
+    Write-Host "      (full log: $($Run.LogPath))" -ForegroundColor DarkGray
 }
 
 # First as the upload task would want it; if that fails, once more with
